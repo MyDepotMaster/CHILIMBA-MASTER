@@ -258,7 +258,7 @@
     </div>
   </nav>
 
-  <header class="lp-hero">
+  <div class="lp-hero">
     <div class="lp-wrap lp-hero-grid">
       <div>
         <div class="lp-eyebrow">Built for Zambian savings groups</div>
@@ -271,7 +271,7 @@
       </div>
       <div class="lp-wheel-stage" id="lpWheelStage" aria-hidden="true"></div>
     </div>
-  </header>
+  </div>
 
   <section id="lpPain">
     <div class="lp-wrap">
@@ -438,7 +438,7 @@ const PENDING_KEY = 'chilimba_pending_sync';
 
 // Fill this in when ready to go live. Leave blank to run fully offline/local.
 const FB_CONFIG = {
-  dbUrl: ''   // e.g. "https://your-project-id-default-rtdb.firebaseio.com"
+  dbUrl: 'https://chilimba-master-default-rtdb.firebaseio.com'
 };
 
 const TIER_LIMITS = {
@@ -947,15 +947,27 @@ function setView(view){
   }
 }
 
+// Safe wrapper: pushState/replaceState throw a SecurityError in sandboxed
+// contexts with no real document URL (e.g. srcdoc preview iframes). Real
+// deployments (GitHub Pages / Median) are unaffected; this just prevents
+// a crash when there's nowhere valid to attach the hash.
+function safeHistory(method, state, hash){
+  try{
+    history[method](state, '', hash);
+  }catch(e){
+    // no-op: back-button history support simply won't be available here
+  }
+}
+
 // Explicit navigation (button taps) — pushes a real history entry so the
 // hardware/gesture back button has somewhere to go instead of closing the app.
 function showApp(){
   setView('app');
-  history.pushState({ cmView:'app' }, '', '#app');
+  safeHistory('pushState', { cmView:'app' }, '#app');
 }
 function showLanding(){
   setView('landing');
-  history.pushState({ cmView:'landing' }, '', '#landing');
+  safeHistory('pushState', { cmView:'landing' }, '#landing');
 }
 
 ['lpNavGetStarted','lpHeroGetStarted','lpFinalGetStarted'].forEach(id=>{
@@ -969,11 +981,11 @@ document.getElementById('backToLanding').addEventListener('click', showLanding);
 // Landing is always the root history entry, even for returning users who
 // skip straight to the app — that way "back" from the app always has
 // somewhere real to land instead of exiting the app outright.
-history.replaceState({ cmView:'landing' }, '', '#landing');
+safeHistory('replaceState', { cmView:'landing' }, '#landing');
 setView('landing');
 if(state.settings.activeGroupId && localStorage.getItem(LANDING_SEEN_KEY)){
   setView('app');
-  history.pushState({ cmView:'app' }, '', '#app');
+  safeHistory('pushState', { cmView:'app' }, '#app');
 }
 
 // Hardware/gesture back button handling.
@@ -992,7 +1004,7 @@ window.addEventListener('popstate', (e)=>{
     } else {
       exitArmed = true;
       toast('Press back again to exit');
-      history.pushState({ cmView:'landing' }, '', '#landing'); // re-arm the guard
+      safeHistory('pushState', { cmView:'landing' }, '#landing'); // re-arm the guard
       exitTimer = setTimeout(()=>{ exitArmed = false; }, 2000);
     }
   }
