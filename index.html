@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1F6E5C">
+<title>Chilimba Master</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#F7F5F1;
+    --surface:#FFFFFF;
+    --border:#E3E0D8;
+    --text:#20241F;
+    --text-dim:#6B6F66;
+    --accent:#1F6E5C;      /* deep teal - growth/community */
+    --accent-dim:#E7F1EE;
+    --gold:#C99A3B;        /* payout / highlight */
+    --gold-dim:#FBF1DD;
+    --danger:#B33F3F;
+    --danger-dim:#F8E9E9;
+    --radius:10px;
+  }
+  [data-theme="dark"]{
+    --bg:#141815;
+    --surface:#1C211D;
+    --border:#2B322C;
+    --text:#EDEFEA;
+    --text-dim:#9BA39A;
+    --accent:#3DA98A;
+    --accent-dim:#1B2D27;
+    --gold:#E0B457;
+    --gold-dim:#2E2716;
+    --danger:#E17777;
+    --danger-dim:#2E1F1F;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg); color:var(--text); -webkit-tap-highlight-color:transparent;
+  }
+  header{
+    position:sticky; top:0; z-index:20; background:var(--surface); border-bottom:1px solid var(--border);
+    padding:12px 14px; display:flex; align-items:center; justify-content:space-between;
+  }
+  header .brand{display:flex; align-items:center; gap:10px;}
+  header .brand .mark{
+    width:30px;height:30px;border-radius:8px;background:var(--accent);color:#fff;
+    display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;
+  }
+  header h1{font-size:16px; margin:0; font-weight:700;}
+  header .group-name{font-size:11px; color:var(--text-dim); margin-top:1px;}
+  .icon-btn{
+    background:none; border:none; color:var(--text); font-size:20px; padding:6px 8px; cursor:pointer;
+  }
+  #app{max-width:640px; margin:0 auto; padding:12px 14px 90px;}
+  .card{
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+    padding:14px; margin-bottom:12px;
+  }
+  .card h2{font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-dim); margin:0 0 10px;}
+  .stat-row{display:flex; gap:10px; flex-wrap:wrap;}
+  .stat{flex:1; min-width:110px;}
+  .stat .num{font-size:20px; font-weight:700;}
+  .stat .label{font-size:11px; color:var(--text-dim);}
+  .stat.good .num{color:var(--accent);}
+  .stat.bad .num{color:var(--danger);}
+  .stat.pending .num{color:var(--gold);}
+  input, select{
+    width:100%; padding:10px 11px; border:1px solid var(--border); border-radius:8px;
+    background:var(--bg); color:var(--text); font-size:14px; margin-bottom:8px;
+  }
+  label{font-size:12px; color:var(--text-dim); display:block; margin-bottom:3px;}
+  .field{margin-bottom:10px;}
+  button.btn{
+    background:var(--accent); color:#fff; border:none; border-radius:8px; padding:10px 14px;
+    font-size:14px; font-weight:600; cursor:pointer;
+  }
+  button.btn.secondary{background:var(--accent-dim); color:var(--accent);}
+  button.btn.danger{background:var(--danger-dim); color:var(--danger);}
+  button.btn.gold{background:var(--gold); color:#fff;}
+  button.btn:disabled{opacity:.45; cursor:not-allowed;}
+  button.full{width:100%;}
+  .row{display:flex; gap:8px;}
+  .row > *{flex:1;}
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  th,td{text-align:left; padding:8px 6px; border-bottom:1px solid var(--border);}
+  th{color:var(--text-dim); font-weight:600; font-size:11px; text-transform:uppercase;}
+  .badge{display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600;}
+  .badge.paid{background:var(--accent-dim); color:var(--accent);}
+  .badge.due{background:var(--danger-dim); color:var(--danger);}
+  .badge.next{background:var(--gold-dim); color:var(--gold);}
+  nav.tabs{
+    position:fixed; bottom:0; left:0; right:0; background:var(--surface); border-top:1px solid var(--border);
+    display:flex; z-index:20; padding-bottom:env(safe-area-inset-bottom);
+  }
+  nav.tabs button{
+    flex:1; background:none; border:none; padding:9px 2px 8px; color:var(--text-dim);
+    font-size:10.5px; display:flex; flex-direction:column; align-items:center; gap:2px; cursor:pointer;
+  }
+  nav.tabs button .ic{font-size:18px;}
+  nav.tabs button.active{color:var(--accent);}
+  .empty{text-align:center; padding:30px 10px; color:var(--text-dim);}
+  .empty .big{font-size:34px; margin-bottom:6px;}
+  .modal-bg{
+    position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:50; display:flex; align-items:flex-end;
+  }
+  .modal{
+    background:var(--surface); width:100%; max-width:640px; margin:0 auto; border-radius:16px 16px 0 0;
+    padding:18px 16px calc(18px + env(safe-area-inset-bottom)); max-height:85vh; overflow-y:auto;
+  }
+  .modal h3{margin:0 0 12px; font-size:16px;}
+  .close-x{float:right; background:none;border:none;font-size:18px;color:var(--text-dim);cursor:pointer;}
+  .gate{
+    text-align:center; padding:22px 16px; background:var(--gold-dim); border:1px dashed var(--gold);
+    border-radius:var(--radius); color:var(--text);
+  }
+  .gate b{color:var(--gold);}
+  #toast{
+    position:fixed; bottom:70px; left:50%; transform:translateX(-50%); background:var(--text); color:var(--bg);
+    padding:9px 16px; border-radius:20px; font-size:13px; z-index:60; opacity:0; transition:opacity .25s;
+    pointer-events:none;
+  }
+  #toast.show{opacity:1;}
+  .member-line{display:flex; align-items:center; justify-content:space-between; padding:9px 0; border-bottom:1px solid var(--border);}
+  .member-line:last-child{border-bottom:none;}
+  .member-name{font-weight:600; font-size:14px;}
+  .member-sub{font-size:11px; color:var(--text-dim);}
+  .whatsapp-box{
+    background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px;
+    font-size:13px; white-space:pre-wrap; font-family:ui-monospace,monospace; line-height:1.5; margin-bottom:10px;
+  }
+  @media print{
+    header, nav.tabs, .no-print{display:none !important;}
+    body{background:#fff;}
+  }
+
+  /* ============================================================
+     LANDING PAGE (shown before a group exists / before "Get started")
+     Namespaced with .lp- so it never collides with app styles above.
+     ============================================================ */
+  #landing{background:var(--bg);}
+  #landing .lp-wrap{max-width:1080px; margin:0 auto; padding:0 22px;}
+  #landing h1, #landing h2{font-family:'Fraunces',serif; font-weight:600; letter-spacing:-.01em; margin:0;}
+  #landing .lp-eyebrow{
+    font-size:12px; font-weight:700; letter-spacing:.11em; text-transform:uppercase;
+    color:var(--accent); display:flex; align-items:center; gap:8px;
+  }
+  #landing .lp-eyebrow::before{content:''; width:16px; height:2px; background:var(--gold); display:inline-block;}
+  #landing .lp-nav{
+    position:sticky; top:0; z-index:5; background:rgba(247,245,241,.9); backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--border);
+  }
+  #landing .lp-nav .lp-wrap{display:flex; align-items:center; justify-content:space-between; padding:13px 22px;}
+  #landing .lp-logo{display:flex; align-items:center; gap:9px; font-family:'Fraunces',serif; font-weight:600; font-size:16px;}
+  #landing .lp-logo .mark{
+    width:27px;height:27px;border-radius:8px;background:var(--accent); color:#fff;
+    display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;
+  }
+  #landing .lp-navcta{
+    background:var(--accent); color:#fff; padding:8px 16px; border-radius:30px; font-size:13px;
+    font-weight:600; border:none; cursor:pointer;
+  }
+  #landing .lp-hero{padding:52px 0 36px;}
+  #landing .lp-hero-grid{display:grid; grid-template-columns:1.05fr .95fr; gap:40px; align-items:center;}
+  #landing .lp-hero h1{font-size:clamp(27px,5vw,42px); line-height:1.1; margin:14px 0 16px;}
+  #landing .lp-hero h1 .lp-accent{color:var(--accent);}
+  #landing .lp-hero p.lp-lead{font-size:15.5px; color:var(--text-dim); max-width:46ch; margin-bottom:22px;}
+  #landing .lp-btn-row{display:flex; gap:10px; flex-wrap:wrap;}
+  #landing .lp-btn{
+    padding:12px 20px; border-radius:30px; font-weight:600; font-size:14px; text-decoration:none;
+    display:inline-flex; align-items:center; gap:8px; border:1px solid transparent; cursor:pointer;
+  }
+  #landing .lp-btn.lp-primary{background:var(--accent); color:#fff;}
+  #landing .lp-btn.lp-ghost{border-color:var(--border); color:var(--text); background:none;}
+  #landing .lp-wheel-stage{position:relative; width:100%; max-width:300px; aspect-ratio:1; margin:0 auto;}
+  #landing .lp-wheel-core{
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    text-align:center; background:var(--surface); border-radius:50%; width:36%; height:36%;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    box-shadow:0 6px 24px rgba(31,110,92,.14); border:1px solid var(--border);
+  }
+  #landing .lp-wheel-core .lp-amt{font-family:'Fraunces',serif; font-weight:600; font-size:clamp(14px,3vw,19px); color:var(--accent);}
+  #landing .lp-wheel-core .lp-lbl{font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em;}
+  #landing .lp-wheel-node{
+    position:absolute; width:15.5%; aspect-ratio:1; border-radius:50%; background:var(--surface);
+    border:1px solid var(--border); display:flex; align-items:center; justify-content:center;
+    font-size:11px; font-weight:700; color:var(--text-dim); transform:translate(-50%,-50%);
+  }
+  #landing .lp-wheel-node.lp-next{background:var(--gold); color:#fff; border-color:var(--gold); box-shadow:0 4px 14px rgba(201,154,59,.4);}
+  @media (prefers-reduced-motion:no-preference){
+    #landing .lp-wheel-ring{animation:lp-spin 32s linear infinite;}
+    #landing .lp-wheel-ring .lp-wheel-node{animation:lp-counter-spin 32s linear infinite;}
+  }
+  @keyframes lp-spin{to{transform:rotate(360deg);}}
+  @keyframes lp-counter-spin{to{transform:translate(-50%,-50%) rotate(-360deg);}}
+  #landing .lp-wheel-ring{position:absolute; inset:0;}
+  #landing section{padding:52px 0;}
+  #landing section h2{font-size:clamp(21px,3.2vw,28px); margin:12px 0 8px; max-width:22ch;}
+  #landing section p.lp-section-lead{color:var(--text-dim); max-width:56ch; font-size:14.5px;}
+  #landing .lp-pain-list, #landing .lp-feat-grid, #landing .lp-price-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:28px;}
+  #landing .lp-pain-card, #landing .lp-feat{
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px;
+  }
+  #landing .lp-pain-card .lp-glyph{font-size:20px; margin-bottom:9px; display:block;}
+  #landing .lp-pain-card h3, #landing .lp-feat h3{font-family:inherit; font-size:14.5px; font-weight:700; margin-bottom:6px;}
+  #landing .lp-pain-card p, #landing .lp-feat p{font-size:13.3px; color:var(--text-dim); margin:0;}
+  #landing .lp-feat .lp-dot{width:8px; height:8px; border-radius:50%; background:var(--accent); margin-bottom:11px;}
+  #landing .lp-steps{margin-top:32px; display:flex; flex-direction:column;}
+  #landing .lp-step{display:grid; grid-template-columns:50px 1fr; gap:16px; padding:20px 0; border-top:1px solid var(--border);}
+  #landing .lp-step:last-child{border-bottom:1px solid var(--border);}
+  #landing .lp-step .lp-num{font-family:'Fraunces',serif; font-size:24px; color:var(--gold); font-weight:600;}
+  #landing .lp-step h3{font-size:15.5px; font-weight:700; margin-bottom:4px;}
+  #landing .lp-step p{margin:0; color:var(--text-dim); font-size:14px; max-width:60ch;}
+  #landing .lp-price-card{
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:22px 20px;
+    display:flex; flex-direction:column;
+  }
+  #landing .lp-price-card.lp-highlight{border-color:var(--gold); box-shadow:0 10px 30px rgba(201,154,59,.16); position:relative;}
+  #landing .lp-price-card.lp-highlight::before{
+    content:'Most popular'; position:absolute; top:-11px; left:20px; background:var(--gold); color:#fff;
+    font-size:10.5px; font-weight:700; padding:4px 10px; border-radius:20px;
+  }
+  #landing .lp-price-card h3{font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-dim); font-weight:700;}
+  #landing .lp-price-card .lp-amount{font-family:'Fraunces',serif; font-size:27px; font-weight:600; margin:8px 0 4px;}
+  #landing .lp-price-card .lp-amount span{font-size:12px; color:var(--text-dim); font-family:inherit; font-weight:500;}
+  #landing .lp-price-card ul{list-style:none; margin:14px 0 20px; padding:0; font-size:13.3px; color:var(--text-dim); flex:1;}
+  #landing .lp-price-card li{padding:5px 0; padding-left:20px; position:relative;}
+  #landing .lp-price-card li::before{content:'✓'; position:absolute; left:0; color:var(--accent); font-weight:700;}
+  #landing .lp-final-cta{
+    background:var(--accent); color:#fff; border-radius:20px; padding:42px 30px; text-align:center;
+    margin:0 22px 52px; max-width:1032px; margin-left:auto; margin-right:auto;
+  }
+  #landing .lp-final-cta h2{color:#fff; margin:0 auto 12px; max-width:26ch;}
+  #landing .lp-final-cta p{color:rgba(255,255,255,.82); max-width:48ch; margin:0 auto 22px;}
+  #landing .lp-final-cta .lp-btn.lp-primary{background:#fff; color:var(--accent);}
+  #landing .lp-final-cta .lp-btn.lp-ghost{border-color:rgba(255,255,255,.35); color:#fff;}
+  #landing .lp-final-cta .lp-btn-row{justify-content:center;}
+  #landing footer{border-top:1px solid var(--border); padding:24px 0 36px;}
+  #landing footer .lp-wrap{display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;}
+  #landing footer .lp-fine{font-size:12px; color:var(--text-dim);}
+  @media (max-width:860px){
+    #landing .lp-hero-grid{grid-template-columns:1fr;}
+    #landing .lp-hero-grid .lp-wheel-stage{order:-1; max-width:230px;}
+    #landing .lp-pain-list, #landing .lp-feat-grid, #landing .lp-price-grid{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body data-theme="light">
+
+<div id="landing">
+  <nav class="lp-nav">
+    <div class="lp-wrap">
+      <div class="lp-logo"><span class="mark">CM</span>Chilimba Master</div>
+      <button class="lp-navcta" id="lpNavGetStarted">Get started</button>
+    </div>
+  </nav>
+
+  <header class="lp-hero">
+    <div class="lp-wrap lp-hero-grid">
+      <div>
+        <div class="lp-eyebrow">Built for Zambian savings groups</div>
+        <h1>Everyone always knows who's paid, <span class="lp-accent">who's next</span>, and what's in the pot.</h1>
+        <p class="lp-lead">Chilimba Master replaces the notebook and the WhatsApp thread with one place your group trusts — contributions, rotation order, and payouts, tracked automatically, every cycle.</p>
+        <div class="lp-btn-row">
+          <button class="lp-btn lp-primary" id="lpHeroGetStarted">Get started — free</button>
+          <a class="lp-btn lp-ghost" href="#lpHow">See how it works</a>
+        </div>
+      </div>
+      <div class="lp-wheel-stage" id="lpWheelStage" aria-hidden="true"></div>
+    </div>
+  </header>
+
+  <section id="lpPain">
+    <div class="lp-wrap">
+      <div class="lp-eyebrow">The problem</div>
+      <h2>Right now, running a chilimba means...</h2>
+      <div class="lp-pain-list">
+        <div class="lp-pain-card">
+          <span class="lp-glyph">💬</span>
+          <h3>A WhatsApp thread nobody can scroll back through</h3>
+          <p>Payment confirmations get buried under stickers and voice notes within a day.</p>
+        </div>
+        <div class="lp-pain-card">
+          <span class="lp-glyph">📓</span>
+          <h3>A notebook that can go missing</h3>
+          <p>One treasurer, one book. If it's lost, so is the group's whole payment history.</p>
+        </div>
+        <div class="lp-pain-card">
+          <span class="lp-glyph">😤</span>
+          <h3>An argument every cycle about who's next</h3>
+          <p>Without a clear record, rotation order becomes a matter of memory — and dispute.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="lpHow" style="background:var(--surface); border-top:1px solid var(--border); border-bottom:1px solid var(--border);">
+    <div class="lp-wrap">
+      <div class="lp-eyebrow">How it works</div>
+      <h2>Set it up once. It runs every cycle after that.</h2>
+      <div class="lp-steps">
+        <div class="lp-step">
+          <div class="lp-num">01</div>
+          <div><h3>Set up your group</h3><p>Contribution amount, cycle length, and rotation order — entered once when the group starts.</p></div>
+        </div>
+        <div class="lp-step">
+          <div class="lp-num">02</div>
+          <div><h3>Log each payment</h3><p>Cash or mobile money, per member, per cycle. Outstanding balances are flagged automatically.</p></div>
+        </div>
+        <div class="lp-step">
+          <div class="lp-num">03</div>
+          <div><h3>Chilimba Master tells you who's next</h3><p>The rotation is tracked for you, so there's no more relying on memory — or arguing about it.</p></div>
+        </div>
+        <div class="lp-step">
+          <div class="lp-num">04</div>
+          <div><h3>Share the summary</h3><p>One tap builds a "who's paid, who owes" message, ready to paste straight into your group's WhatsApp.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="lpFeatures">
+    <div class="lp-wrap">
+      <div class="lp-eyebrow">What's inside</div>
+      <h2>Everything a treasurer actually needs</h2>
+      <div class="lp-feat-grid">
+        <div class="lp-feat"><div class="lp-dot"></div><h3>Rotation engine</h3><p>Always knows who's received a payout this round and who's next in line.</p></div>
+        <div class="lp-feat"><div class="lp-dot"></div><h3>Contribution tracking</h3><p>Log payments per member, per cycle — cash or mobile money, with late flags.</p></div>
+        <div class="lp-feat"><div class="lp-dot"></div><h3>Ledger & balance</h3><p>Total collected, total paid out, and the pot balance — always current.</p></div>
+        <div class="lp-feat"><div class="lp-dot"></div><h3>WhatsApp summaries</h3><p>A ready-to-share text update, so nobody has to ask "who owes what" again.</p></div>
+        <div class="lp-feat"><div class="lp-dot"></div><h3>Printable statements</h3><p>A clean per-member statement, ready to hand over or save as PDF.</p></div>
+        <div class="lp-feat"><div class="lp-dot"></div><h3>Loans & penalties</h3><p>For groups that lend from the pot — interest, due dates, and late fines, automated.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="lpPricing" style="background:var(--surface); border-top:1px solid var(--border); border-bottom:1px solid var(--border);">
+    <div class="lp-wrap">
+      <div class="lp-eyebrow">Pricing</div>
+      <h2>Start free. Upgrade when the group grows.</h2>
+      <div class="lp-price-grid">
+        <div class="lp-price-card">
+          <h3>Free</h3>
+          <div class="lp-amount">K0<span> /forever</span></div>
+          <ul>
+            <li>1 group</li>
+            <li>Up to 8 members</li>
+            <li>Contribution tracking</li>
+            <li>Rotation & payout tracking</li>
+          </ul>
+          <button class="lp-btn lp-ghost lp-price-cta">Get started</button>
+        </div>
+        <div class="lp-price-card lp-highlight">
+          <h3>Growth</h3>
+          <div class="lp-amount">K90–150<span> /month</span></div>
+          <ul>
+            <li>Up to 5 groups</li>
+            <li>Up to 60 members per group</li>
+            <li>Cloud sync across devices</li>
+            <li>Data exports</li>
+          </ul>
+          <button class="lp-btn lp-primary lp-price-cta">Upgrade to Growth</button>
+        </div>
+        <div class="lp-price-card">
+          <h3>Pro</h3>
+          <div class="lp-amount">K300<span> /month</span></div>
+          <ul>
+            <li>Unlimited groups & members</li>
+            <li>Loans module</li>
+            <li>Penalty automation</li>
+            <li>Multi-admin access</li>
+          </ul>
+          <button class="lp-btn lp-ghost lp-price-cta">Upgrade to Pro</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="lp-final-cta">
+    <h2>Your group already trusts you with the pot. Give it a system that earns that trust too.</h2>
+    <p>Free to start, ready in minutes, and built for how chilimba groups actually run.</p>
+    <div class="lp-btn-row">
+      <button class="lp-btn lp-primary" id="lpFinalGetStarted">Get started — free</button>
+      <a class="lp-btn lp-ghost" href="#lpHow">See how it works</a>
+    </div>
+  </div>
+
+  <footer>
+    <div class="lp-wrap">
+      <div class="lp-fine">Chilimba Master by Nexlite Digital Solutions Limited · Mansa, Zambia</div>
+      <div class="lp-fine">© 2026 Nexlite Digital Solutions Limited</div>
+    </div>
+  </footer>
+</div>
+
+<div id="appShell" style="display:none;">
+  <header>
+    <div class="brand">
+      <div class="mark">CM</div>
+      <div>
+        <h1>Chilimba Master</h1>
+        <div class="group-name" id="headerGroupName">No group yet</div>
+      </div>
+    </div>
+    <div>
+      <button class="icon-btn" id="backToLanding" title="About Chilimba Master">&#8962;</button>
+      <button class="icon-btn" id="themeToggle" title="Toggle theme">&#9788;</button>
+    </div>
+  </header>
+
+  <div id="app"></div>
+
+  <nav class="tabs" id="tabsNav" style="display:none;">
+    <button data-tab="overview" class="active"><span class="ic">&#128202;</span>Overview</button>
+    <button data-tab="members"><span class="ic">&#128101;</span>Members</button>
+    <button data-tab="contributions"><span class="ic">&#128176;</span>Contribute</button>
+    <button data-tab="payouts"><span class="ic">&#127942;</span>Payout</button>
+    <button data-tab="share"><span class="ic">&#128172;</span>Share</button>
+  </nav>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* =========================================================
+   CHILIMBA MASTER — MVP
+   Single-file offline-first PWA. Pattern matches Nexlite's
+   other apps (MDM / ZamAgro): localStorage state + pending
+   sync queue, Firebase RTDB REST wired in later by filling
+   FB_CONFIG below. No SDK dependency.
+   ========================================================= */
+
+const STORAGE_KEY = 'chilimba_state_v1';
+const PENDING_KEY = 'chilimba_pending_sync';
+
+// Fill this in when ready to go live. Leave blank to run fully offline/local.
+const FB_CONFIG = {
+  dbUrl: ''   // e.g. "https://your-project-id-default-rtdb.firebaseio.com"
+};
+
+const TIER_LIMITS = {
+  free:   { groups: 1, membersPerGroup: 8, loans:false, exports:false },
+  growth: { groups: 5, membersPerGroup: 60, loans:false, exports:true },
+  pro:    { groups: Infinity, membersPerGroup: Infinity, loans:true, exports:true }
+};
+
+let state = loadState();
+let activeTab = 'overview';
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(raw) return JSON.parse(raw);
+  }catch(e){ console.error('State load failed', e); }
+  return {
+    groups:{}, members:{}, contributions:{}, payouts:{},
+    settings:{ tier:'free', activeGroupId:null, theme:'light' }
+  };
+}
+
+function saveState(){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function uid(prefix){
+  return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7);
+}
+
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast._h);
+  toast._h = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+function fmtK(n){
+  n = Number(n)||0;
+  return 'K' + n.toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+/* ---------- pending sync queue (stub, ready for Firebase REST) ---------- */
+function queueSync(path, data){
+  let pending = JSON.parse(localStorage.getItem(PENDING_KEY) || '[]');
+  pending.push({ path, data, ts: Date.now() });
+  localStorage.setItem(PENDING_KEY, JSON.stringify(pending));
+  if(FB_CONFIG.dbUrl) flushPendingSync();
+}
+
+async function flushPendingSync(){
+  if(!FB_CONFIG.dbUrl) return;
+  let pending = JSON.parse(localStorage.getItem(PENDING_KEY) || '[]');
+  if(!pending.length) return;
+  const remaining = [];
+  for(const item of pending){
+    try{
+      await fbRestSave(item.path, item.data);
+    }catch(e){
+      remaining.push(item); // keep for retry
+    }
+  }
+  localStorage.setItem(PENDING_KEY, JSON.stringify(remaining));
+}
+
+async function fbRestSave(path, data){
+  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + path + '.json';
+  const res = await fetch(url, { method:'PUT', body: JSON.stringify(data) });
+  if(!res.ok) throw new Error('fbRestSave failed: ' + res.status);
+  return res.json();
+}
+
+async function fbRestLoad(path){
+  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + path + '.json';
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('fbRestLoad failed: ' + res.status);
+  return res.json();
+}
+
+/* ---------------------- tier helpers ---------------------- */
+function currentLimits(){
+  return TIER_LIMITS[state.settings.tier] || TIER_LIMITS.free;
+}
+function groupCount(){ return Object.keys(state.groups).length; }
+function membersInGroup(groupId){
+  return Object.values(state.members).filter(m => m.groupId === groupId && m.status !== 'exited');
+}
+
+/* ---------------------- group / member CRUD ---------------------- */
+function createGroup({name, amount, frequency, startDate}){
+  const limits = currentLimits();
+  if(groupCount() >= limits.groups){
+    toast('Free tier allows 1 group. Upgrade to add more.');
+    return null;
+  }
+  const id = uid('grp');
+  state.groups[id] = {
+    id, name, contribution:Number(amount), frequency, startDate,
+    rotationOrder: [], currentCycle: 1, createdAt: Date.now()
+  };
+  state.settings.activeGroupId = id;
+  saveState();
+  queueSync('groups/'+id, state.groups[id]);
+  return id;
+}
+
+function addMember(groupId, {name, phone}){
+  const limits = currentLimits();
+  if(membersInGroup(groupId).length >= limits.membersPerGroup){
+    toast('Member limit reached for your plan. Upgrade for more.');
+    return null;
+  }
+  const id = uid('mem');
+  const grp = state.groups[groupId];
+  state.members[id] = {
+    id, groupId, name, phone, joinDate: new Date().toISOString().slice(0,10),
+    position: grp.rotationOrder.length, status:'active'
+  };
+  grp.rotationOrder.push(id);
+  saveState();
+  queueSync('members/'+id, state.members[id]);
+  return id;
+}
+
+function removeMember(memberId){
+  const m = state.members[memberId];
+  if(!m) return;
+  m.status = 'exited';
+  const grp = state.groups[m.groupId];
+  grp.rotationOrder = grp.rotationOrder.filter(id => id !== memberId);
+  saveState();
+  queueSync('members/'+memberId, m);
+}
+
+/* ---------------------- contributions ---------------------- */
+function recordContribution(groupId, memberId, cycle, amountPaid, method){
+  const grp = state.groups[groupId];
+  const existing = Object.values(state.contributions).find(
+    c => c.groupId===groupId && c.memberId===memberId && c.cycle===cycle
+  );
+  const due = grp.contribution;
+  const paid = Number(amountPaid);
+  const record = existing || { id: uid('con'), groupId, memberId, cycle };
+  record.amountDue = due;
+  record.amountPaid = paid;
+  record.date = new Date().toISOString().slice(0,10);
+  record.method = method;
+  record.late = paid < due;
+  state.contributions[record.id] = record;
+  saveState();
+  queueSync('contributions/'+record.id, record);
+}
+
+function getCycleStatus(groupId, cycle){
+  const members = membersInGroup(groupId);
+  return members.map(m=>{
+    const c = Object.values(state.contributions).find(
+      x => x.groupId===groupId && x.memberId===m.id && x.cycle===cycle
+    );
+    return {
+      member: m,
+      paid: !!c && c.amountPaid >= state.groups[groupId].contribution,
+      amountPaid: c ? c.amountPaid : 0,
+      due: state.groups[groupId].contribution
+    };
+  });
+}
+
+/* ---------------------- payouts / rotation ---------------------- */
+function suggestNextPayout(groupId){
+  const grp = state.groups[groupId];
+  const paidOut = new Set(
+    Object.values(state.payouts).filter(p=>p.groupId===groupId).map(p=>p.memberId)
+  );
+  for(const memberId of grp.rotationOrder){
+    if(!paidOut.has(memberId)) return state.members[memberId];
+  }
+  return null; // everyone has received a payout this rotation
+}
+
+function markPayout(groupId, memberId, cycle, amount){
+  const id = uid('pay');
+  const record = { id, groupId, memberId, cycle, amount:Number(amount), date:new Date().toISOString().slice(0,10), confirmed:true };
+  state.payouts[id] = record;
+  const grp = state.groups[groupId];
+  grp.currentCycle += 1;
+  saveState();
+  queueSync('payouts/'+id, record);
+}
+
+/* ---------------------- ledger ---------------------- */
+function computeLedger(groupId){
+  const contributions = Object.values(state.contributions).filter(c=>c.groupId===groupId);
+  const payouts = Object.values(state.payouts).filter(p=>p.groupId===groupId);
+  const totalCollected = contributions.reduce((s,c)=>s+c.amountPaid,0);
+  const totalPaidOut = payouts.reduce((s,p)=>s+p.amount,0);
+  const members = membersInGroup(groupId);
+  const outstanding = members.map(m=>{
+    const grp = state.groups[groupId];
+    const owedCycles = grp.currentCycle;
+    let owed = 0;
+    for(let c=1;c<=owedCycles;c++){
+      const rec = contributions.find(x=>x.memberId===m.id && x.cycle===c);
+      const paid = rec ? rec.amountPaid : 0;
+      owed += Math.max(grp.contribution - paid, 0);
+    }
+    return { member:m, owed };
+  });
+  return { totalCollected, totalPaidOut, balance: totalCollected-totalPaidOut, outstanding };
+}
+
+/* ---------------------- WhatsApp summary ---------------------- */
+function generateWhatsAppSummary(groupId){
+  const grp = state.groups[groupId];
+  const cycle = grp.currentCycle;
+  const status = getCycleStatus(groupId, cycle);
+  const paidList = status.filter(s=>s.paid);
+  const dueList = status.filter(s=>!s.paid);
+  let msg = `*${grp.name} — Cycle ${cycle}*\n`;
+  msg += `Contribution: ${fmtK(grp.contribution)} per member\n\n`;
+  msg += `✅ Paid (${paidList.length}):\n`;
+  msg += paidList.length ? paidList.map(s=>`- ${s.member.name}`).join('\n') : '- none yet';
+  msg += `\n\n⏳ Outstanding (${dueList.length}):\n`;
+  msg += dueList.length ? dueList.map(s=>`- ${s.member.name} (owes ${fmtK(grp.contribution - s.amountPaid)})`).join('\n') : '- everyone is up to date';
+  const next = suggestNextPayout(groupId);
+  if(next) msg += `\n\n🏆 Next payout: ${next.name}`;
+  return msg;
+}
+
+/* ============================= RENDER ============================= */
+
+function render(){
+  const app = document.getElementById('app');
+  const groupId = state.settings.activeGroupId;
+  document.getElementById('tabsNav').style.display = groupId ? 'flex' : 'none';
+  document.getElementById('headerGroupName').textContent = groupId ? state.groups[groupId].name : 'No group yet';
+
+  if(!groupId){
+    app.innerHTML = renderNoGroup();
+    bindNoGroup();
+    return;
+  }
+
+  if(activeTab === 'overview') { app.innerHTML = renderOverview(groupId); bindOverview(groupId); }
+  else if(activeTab === 'members') { app.innerHTML = renderMembers(groupId); bindMembers(groupId); }
+  else if(activeTab === 'contributions') { app.innerHTML = renderContributions(groupId); bindContributions(groupId); }
+  else if(activeTab === 'payouts') { app.innerHTML = renderPayouts(groupId); bindPayouts(groupId); }
+  else if(activeTab === 'share') { app.innerHTML = renderShare(groupId); bindShare(groupId); }
+
+  document.querySelectorAll('nav.tabs button').forEach(b=>{
+    b.classList.toggle('active', b.dataset.tab === activeTab);
+  });
+}
+
+function renderNoGroup(){
+  return `
+  <div class="card">
+    <div class="empty">
+      <div class="big">👛</div>
+      <p>Set up your first chilimba group to get started.</p>
+    </div>
+    <div class="field"><label>Group name</label><input id="ng_name" placeholder="e.g. Kabwe Market Ladies"></div>
+    <div class="row">
+      <div class="field"><label>Contribution (K)</label><input id="ng_amount" type="number" placeholder="200"></div>
+      <div class="field"><label>Frequency</label>
+        <select id="ng_freq"><option value="weekly">Weekly</option><option value="monthly" selected>Monthly</option></select>
+      </div>
+    </div>
+    <div class="field"><label>Start date</label><input id="ng_start" type="date"></div>
+    <button class="btn full" id="ng_create">Create group</button>
+  </div>`;
+}
+
+function bindNoGroup(){
+  document.getElementById('ng_create').onclick = ()=>{
+    const name = document.getElementById('ng_name').value.trim();
+    const amount = document.getElementById('ng_amount').value;
+    const frequency = document.getElementById('ng_freq').value;
+    const startDate = document.getElementById('ng_start').value || new Date().toISOString().slice(0,10);
+    if(!name || !amount){ toast('Enter a group name and contribution amount'); return; }
+    const id = createGroup({name, amount, frequency, startDate});
+    if(id){ toast('Group created'); render(); }
+  };
+}
+
+function renderOverview(groupId){
+  const grp = state.groups[groupId];
+  const ledger = computeLedger(groupId);
+  const members = membersInGroup(groupId);
+  const limits = currentLimits();
+  const gateHtml = state.settings.tier === 'free' ? `
+    <div class="gate no-print">
+      Free plan: <b>1 group</b>, up to <b>8 members</b>. Upgrade to Growth for multiple groups, cloud sync and exports.
+    </div>` : '';
+  return `
+    ${gateHtml}
+    <div class="card">
+      <h2>Cycle ${grp.currentCycle} — Overview</h2>
+      <div class="stat-row">
+        <div class="stat good"><div class="num">${fmtK(ledger.totalCollected)}</div><div class="label">Total collected</div></div>
+        <div class="stat pending"><div class="num">${fmtK(ledger.totalPaidOut)}</div><div class="label">Total paid out</div></div>
+        <div class="stat"><div class="num">${members.length}/${limits.membersPerGroup===Infinity?'∞':limits.membersPerGroup}</div><div class="label">Members</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>This cycle</h2>
+      ${renderCycleList(groupId, grp.currentCycle)}
+    </div>`;
+}
+
+function renderCycleList(groupId, cycle){
+  const status = getCycleStatus(groupId, cycle);
+  if(!status.length) return `<div class="empty">Add members to start tracking contributions.</div>`;
+  return status.map(s=>`
+    <div class="member-line">
+      <div><div class="member-name">${s.member.name}</div><div class="member-sub">${s.member.phone||''}</div></div>
+      <span class="badge ${s.paid?'paid':'due'}">${s.paid? 'Paid' : 'Owes '+fmtK(state.groups[groupId].contribution - s.amountPaid)}</span>
+    </div>`).join('');
+}
+
+function bindOverview(groupId){}
+
+function renderMembers(groupId){
+  const members = membersInGroup(groupId);
+  return `
+    <div class="card">
+      <h2>Add member</h2>
+      <div class="row">
+        <div class="field"><input id="mem_name" placeholder="Name"></div>
+        <div class="field"><input id="mem_phone" placeholder="Phone"></div>
+      </div>
+      <button class="btn full" id="mem_add">Add to rotation</button>
+    </div>
+    <div class="card">
+      <h2>Members (${members.length}) — rotation order</h2>
+      ${members.length ? members.map((m,i)=>`
+        <div class="member-line">
+          <div><div class="member-name">${i+1}. ${m.name}</div><div class="member-sub">${m.phone||''} · joined ${m.joinDate}</div></div>
+          <button class="btn danger" data-remove="${m.id}" style="padding:6px 10px;font-size:12px;">Remove</button>
+        </div>`).join('') : `<div class="empty">No members yet.</div>`}
+    </div>`;
+}
+
+function bindMembers(groupId){
+  document.getElementById('mem_add').onclick = ()=>{
+    const name = document.getElementById('mem_name').value.trim();
+    const phone = document.getElementById('mem_phone').value.trim();
+    if(!name){ toast('Enter a name'); return; }
+    const id = addMember(groupId, {name, phone});
+    if(id){ toast('Member added'); render(); }
+  };
+  document.querySelectorAll('[data-remove]').forEach(btn=>{
+    btn.onclick = ()=>{
+      if(confirm('Remove this member from the rotation?')){
+        removeMember(btn.dataset.remove);
+        render();
+      }
+    };
+  });
+}
+
+function renderContributions(groupId){
+  const grp = state.groups[groupId];
+  const status = getCycleStatus(groupId, grp.currentCycle);
+  return `
+    <div class="card">
+      <h2>Log contribution — Cycle ${grp.currentCycle}</h2>
+      ${status.length ? status.map(s=>`
+        <div class="member-line">
+          <div><div class="member-name">${s.member.name}</div><div class="member-sub">${s.paid? 'Paid '+fmtK(s.amountPaid) : 'Due '+fmtK(s.due)}</div></div>
+          <button class="btn ${s.paid?'secondary':''}" data-log="${s.member.id}" style="padding:6px 10px;font-size:12px;">${s.paid?'Edit':'Log payment'}</button>
+        </div>`).join('') : `<div class="empty">Add members first.</div>`}
+    </div>`;
+}
+
+function bindContributions(groupId){
+  document.querySelectorAll('[data-log]').forEach(btn=>{
+    btn.onclick = ()=>openContributionModal(groupId, btn.dataset.log);
+  });
+}
+
+function openContributionModal(groupId, memberId){
+  const grp = state.groups[groupId];
+  const m = state.members[memberId];
+  const bg = document.createElement('div');
+  bg.className='modal-bg';
+  bg.innerHTML = `
+    <div class="modal">
+      <button class="close-x">&times;</button>
+      <h3>${m.name} — Cycle ${grp.currentCycle}</h3>
+      <div class="field"><label>Amount paid (due ${fmtK(grp.contribution)})</label><input id="cm_amount" type="number" value="${grp.contribution}"></div>
+      <div class="field"><label>Method</label>
+        <select id="cm_method"><option value="cash">Cash</option><option value="mobile_money">Mobile money</option></select>
+      </div>
+      <button class="btn full" id="cm_save">Save</button>
+    </div>`;
+  document.body.appendChild(bg);
+  bg.querySelector('.close-x').onclick = ()=>bg.remove();
+  bg.querySelector('#cm_save').onclick = ()=>{
+    const amount = bg.querySelector('#cm_amount').value;
+    const method = bg.querySelector('#cm_method').value;
+    recordContribution(groupId, memberId, grp.currentCycle, amount, method);
+    bg.remove();
+    toast('Contribution logged');
+    render();
+  };
+}
+
+function renderPayouts(groupId){
+  const grp = state.groups[groupId];
+  const next = suggestNextPayout(groupId);
+  const history = Object.values(state.payouts).filter(p=>p.groupId===groupId).sort((a,b)=>b.cycle-a.cycle);
+  return `
+    <div class="card">
+      <h2>Suggested payout — Cycle ${grp.currentCycle}</h2>
+      ${next ? `
+        <div class="member-line">
+          <div><div class="member-name">${next.name}</div><div class="member-sub">Next in rotation</div></div>
+          <span class="badge next">Next</span>
+        </div>
+        <div class="field" style="margin-top:10px;"><label>Payout amount</label><input id="po_amount" type="number" value="${grp.contribution * membersInGroup(groupId).length}"></div>
+        <button class="btn gold full" id="po_confirm">Confirm payout to ${next.name}</button>
+      ` : `<div class="empty">Everyone has received a payout this rotation. Start a new round by removing/adding members or resetting.</div>`}
+    </div>
+    <div class="card">
+      <h2>Payout history</h2>
+      ${history.length ? `<table><tr><th>Cycle</th><th>Member</th><th>Amount</th><th>Date</th></tr>${
+        history.map(p=>`<tr><td>${p.cycle}</td><td>${state.members[p.memberId]?.name||'—'}</td><td>${fmtK(p.amount)}</td><td>${p.date}</td></tr>`).join('')
+      }</table>` : `<div class="empty">No payouts recorded yet.</div>`}
+    </div>`;
+}
+
+function bindPayouts(groupId){
+  const btn = document.getElementById('po_confirm');
+  if(!btn) return;
+  btn.onclick = ()=>{
+    const next = suggestNextPayout(groupId);
+    const amount = document.getElementById('po_amount').value;
+    if(!confirm(`Confirm payout of ${fmtK(amount)} to ${next.name}?`)) return;
+    markPayout(groupId, next.id, state.groups[groupId].currentCycle, amount);
+    toast('Payout recorded, new cycle started');
+    render();
+  };
+}
+
+function renderShare(groupId){
+  const ledger = computeLedger(groupId);
+  return `
+    <div class="card">
+      <h2>WhatsApp summary</h2>
+      <div class="whatsapp-box" id="wa_text">${generateWhatsAppSummary(groupId)}</div>
+      <button class="btn full" id="wa_copy">Copy to clipboard</button>
+    </div>
+    <div class="card">
+      <h2>Ledger</h2>
+      <div class="stat-row">
+        <div class="stat good"><div class="num">${fmtK(ledger.totalCollected)}</div><div class="label">Collected</div></div>
+        <div class="stat pending"><div class="num">${fmtK(ledger.totalPaidOut)}</div><div class="label">Paid out</div></div>
+        <div class="stat"><div class="num">${fmtK(ledger.balance)}</div><div class="label">Pot balance</div></div>
+      </div>
+      <button class="btn secondary full no-print" id="print_statement" style="margin-top:10px;">Print / save statement</button>
+    </div>`;
+}
+
+function bindShare(groupId){
+  document.getElementById('wa_copy').onclick = ()=>{
+    const text = generateWhatsAppSummary(groupId);
+    navigator.clipboard.writeText(text).then(()=>toast('Copied — paste into WhatsApp'));
+  };
+  document.getElementById('print_statement').onclick = ()=>window.print();
+}
+
+/* ---------------------- nav + theme ---------------------- */
+document.getElementById('tabsNav').addEventListener('click', e=>{
+  const btn = e.target.closest('button[data-tab]');
+  if(!btn) return;
+  activeTab = btn.dataset.tab;
+  render();
+});
+
+document.getElementById('themeToggle').onclick = ()=>{
+  const html = document.body;
+  const next = html.getAttribute('data-theme')==='dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  state.settings.theme = next;
+  saveState();
+};
+
+// restore theme
+if(state.settings.theme) document.body.setAttribute('data-theme', state.settings.theme);
+
+/* ---------------------- landing <-> app shell ---------------------- */
+const LANDING_SEEN_KEY = 'chilimba_landing_dismissed';
+
+// Pure DOM toggle — never touches browser history on its own.
+function setView(view){
+  if(view === 'app'){
+    document.getElementById('landing').style.display = 'none';
+    document.getElementById('appShell').style.display = 'block';
+    localStorage.setItem(LANDING_SEEN_KEY, '1');
+    render();
+  } else {
+    document.getElementById('appShell').style.display = 'none';
+    document.getElementById('landing').style.display = 'block';
+  }
+}
+
+// Explicit navigation (button taps) — pushes a real history entry so the
+// hardware/gesture back button has somewhere to go instead of closing the app.
+function showApp(){
+  setView('app');
+  history.pushState({ cmView:'app' }, '', '#app');
+}
+function showLanding(){
+  setView('landing');
+  history.pushState({ cmView:'landing' }, '', '#landing');
+}
+
+['lpNavGetStarted','lpHeroGetStarted','lpFinalGetStarted'].forEach(id=>{
+  document.getElementById(id).addEventListener('click', showApp);
+});
+document.querySelectorAll('.lp-price-cta').forEach(btn=>{
+  btn.addEventListener('click', showApp);
+});
+document.getElementById('backToLanding').addEventListener('click', showLanding);
+
+// Landing is always the root history entry, even for returning users who
+// skip straight to the app — that way "back" from the app always has
+// somewhere real to land instead of exiting the app outright.
+history.replaceState({ cmView:'landing' }, '', '#landing');
+setView('landing');
+if(state.settings.activeGroupId && localStorage.getItem(LANDING_SEEN_KEY)){
+  setView('app');
+  history.pushState({ cmView:'app' }, '', '#app');
+}
+
+// Hardware/gesture back button handling.
+// From the app: back reveals the landing page (does not close the app).
+// From the landing page: back requires a second press within 2s to actually
+// exit ("press back again to exit"), so a single accidental back never closes it.
+let exitArmed = false, exitTimer = null;
+window.addEventListener('popstate', (e)=>{
+  const view = (e.state && e.state.cmView) || 'landing';
+  setView(view);
+  if(view === 'landing'){
+    if(exitArmed){
+      clearTimeout(exitTimer);
+      // second back press within the window: let it actually exit by not
+      // re-arming a new history entry.
+    } else {
+      exitArmed = true;
+      toast('Press back again to exit');
+      history.pushState({ cmView:'landing' }, '', '#landing'); // re-arm the guard
+      exitTimer = setTimeout(()=>{ exitArmed = false; }, 2000);
+    }
+  }
+});
+
+/* ---------------------- build the landing wheel ---------------------- */
+(function buildLandingWheel(){
+  const stage = document.getElementById('lpWheelStage');
+  if(!stage) return;
+  const names = ['M','K','C','B','T','N'];
+  const nextIndex = 2;
+  const ring = document.createElement('div');
+  ring.className = 'lp-wheel-ring';
+  stage.appendChild(ring);
+
+
+  const R = 42; // percent radius
+  names.forEach((n,i)=>{
+    const angle = (i / names.length) * 2 * Math.PI - Math.PI/2;
+    const x = 50 + R * Math.cos(angle);
+    const y = 50 + R * Math.sin(angle);
+    const node = document.createElement('div');
+    node.className = 'lp-wheel-node' + (i===nextIndex ? ' lp-next' : '');
+    node.style.left = x + '%';
+    node.style.top = y + '%';
+    node.textContent = n;
+    ring.appendChild(node);
+  });
+
+  const core = document.createElement('div');
+  core.className = 'lp-wheel-core';
+  core.innerHTML = '<div class="lp-amt">K1,600</div><div class="lp-lbl">this cycle</div>';
+  stage.appendChild(core);
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('viewBox','0 0 100 100');
+  svg.style.position='absolute'; svg.style.inset=0;
+  const circle = document.createElementNS('http://www.w3.org/2000/svg','circle');
+  circle.setAttribute('cx','50'); circle.setAttribute('cy','50'); circle.setAttribute('r', R);
+  circle.setAttribute('fill','none'); circle.setAttribute('stroke','#E3E0D8'); circle.setAttribute('stroke-width','1');
+  circle.setAttribute('stroke-dasharray','2 4');
+  svg.appendChild(circle);
+  stage.insertBefore(svg, ring);
+})();
+</script>
+</body>
+</html>
