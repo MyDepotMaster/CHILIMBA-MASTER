@@ -205,7 +205,8 @@
   #landing section{padding:52px 0;}
   #landing section h2{font-size:clamp(21px,3.2vw,28px); margin:12px 0 8px; max-width:22ch;}
   #landing section p.lp-section-lead{color:var(--text-dim); max-width:56ch; font-size:14.5px;}
-  #landing .lp-pain-list, #landing .lp-feat-grid, #landing .lp-price-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:28px;}
+  #landing .lp-pain-list, #landing .lp-feat-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:28px;}
+  #landing .lp-price-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-top:28px;}
   #landing .lp-pain-card, #landing .lp-feat{
     background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px;
   }
@@ -246,6 +247,9 @@
   #landing footer{border-top:1px solid var(--border); padding:24px 0 36px;}
   #landing footer .lp-wrap{display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;}
   #landing footer .lp-fine{font-size:12px; color:var(--text-dim);}
+  @media (max-width:1080px) and (min-width:861px){
+    #landing .lp-price-grid{grid-template-columns:repeat(2,1fr);}
+  }
   @media (max-width:860px){
     #landing .lp-hero-grid{grid-template-columns:1fr;}
     #landing .lp-hero-grid .lp-wheel-stage{order:-1; max-width:230px;}
@@ -354,21 +358,32 @@
           <h3>Free</h3>
           <div class="lp-amount">K0<span> /forever</span></div>
           <ul>
-            <li>1 group</li>
             <li>Up to 8 members</li>
             <li>Contribution tracking</li>
             <li>Rotation & payout tracking</li>
+            <li>WhatsApp summary sharing</li>
           </ul>
           <button class="lp-btn lp-ghost lp-price-cta">Get started</button>
         </div>
+        <div class="lp-price-card">
+          <h3>Starter</h3>
+          <div class="lp-amount">K90<span> /month</span></div>
+          <ul>
+            <li>Up to 20 members</li>
+            <li>Cloud sync across devices</li>
+            <li>Contribution & payout tracking</li>
+            <li>WhatsApp summary sharing</li>
+          </ul>
+          <button class="lp-btn lp-ghost lp-price-cta">Upgrade to Starter</button>
+        </div>
         <div class="lp-price-card lp-highlight">
           <h3>Growth</h3>
-          <div class="lp-amount">K90–150<span> /month</span></div>
+          <div class="lp-amount">K150<span> /month</span></div>
           <ul>
-            <li>Up to 5 groups</li>
-            <li>Up to 60 members per group</li>
+            <li>Up to 60 members</li>
             <li>Cloud sync across devices</li>
             <li>Data exports</li>
+            <li>Printable statements</li>
           </ul>
           <button class="lp-btn lp-primary lp-price-cta">Upgrade to Growth</button>
         </div>
@@ -376,7 +391,7 @@
           <h3>Pro</h3>
           <div class="lp-amount">K300<span> /month</span></div>
           <ul>
-            <li>Unlimited groups & members</li>
+            <li>Unlimited members</li>
             <li>Loans module</li>
             <li>Penalty automation</li>
             <li>Multi-admin access</li>
@@ -515,21 +530,19 @@ const STORAGE_KEY = 'chilimba_state_v1';
 const PENDING_KEY = 'chilimba_pending_sync';
 
 // Fill this in when ready to go live. Leave blank to run fully offline/local.
+// No Cloud Functions or Firebase Auth needed — passwords are hashed
+// client-side (see hashPassword()) and compared against the hash stored
+// on the member record. Security rides on the dbUrl being unguessable,
+// same posture as the other Nexlite apps before they add per-user rules.
 const FB_CONFIG = {
-  dbUrl: 'https://chilimba-master-default-rtdb.firebaseio.com',
-  // Web API key from Firebase console > Project settings > General.
-  // Needed to exchange a member login token for a real session — safe to
-  // expose publicly, it's not a secret (same key Firebase's own JS SDK uses).
-  apiKey: '',
-  // Base URL of the deployed Cloud Functions, e.g.
-  // 'https://us-central1-chilimba-master.cloudfunctions.net'
-  functionsBaseUrl: ''
+  dbUrl: 'https://chilimba-master-default-rtdb.firebaseio.com'
 };
 
 const TIER_LIMITS = {
-  free:   { groups: 1, membersPerGroup: 8, loans:false, exports:false },
-  growth: { groups: 5, membersPerGroup: 60, loans:false, exports:true },
-  pro:    { groups: Infinity, membersPerGroup: Infinity, loans:true, exports:true }
+  free:    { totalMembers: 8, loans:false, exports:false },
+  starter: { totalMembers: 20, loans:false, exports:false },
+  growth:  { totalMembers: 60, loans:false, exports:true },
+  pro:     { totalMembers: Infinity, loans:true, exports:true }
 };
 
 let state = loadState();
@@ -539,11 +552,27 @@ let activeTab = 'overview';
 function loadState(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw) return JSON.parse(raw);
+    if(raw){
+      const parsed = JSON.parse(raw);
+      // Migrate old multi-group installs (groups:{} keyed by id) down to a
+      // single flat group — this app only ever supports one savings circle
+      // per account now. Takes the first group found, if any, and strips
+      // groupId off every member/contribution/payout/submission record.
+      if(parsed.groups && !parsed.group){
+        const firstId = Object.keys(parsed.groups)[0];
+        parsed.group = firstId ? parsed.groups[firstId] : null;
+        delete parsed.groups;
+        ['members','contributions','payouts','paymentSubmissions'].forEach(coll=>{
+          if(parsed[coll]) Object.values(parsed[coll]).forEach(rec=>{ delete rec.groupId; });
+        });
+        if(parsed.settings) delete parsed.settings.activeGroupId;
+      }
+      return parsed;
+    }
   }catch(e){ console.error('State load failed', e); }
   return {
-    groups:{}, members:{}, contributions:{}, payouts:{}, paymentSubmissions:{},
-    settings:{ tier:'free', activeGroupId:null, theme:'light' }
+    group:null, members:{}, contributions:{}, payouts:{}, paymentSubmissions:{},
+    settings:{ tier:'free', theme:'light' }
   };
 }
 
@@ -575,9 +604,14 @@ function escapeHtml(str){
 }
 
 /* ---------------------- member auth helpers ---------------------- */
-// Password verification now happens server-side (Cloud Functions), never
-// in the client — see loginMember()/setMemberPasswordRemote() below. This
-// file no longer hashes or compares passwords itself.
+// Passwords are hashed client-side with SHA-256 (same primitive as MDM)
+// and compared against the hash stored on the member record — no Cloud
+// Functions, no Firebase Auth, no token exchange.
+
+async function hashPassword(str){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
 
 function genPassword(){
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -588,19 +622,10 @@ function genPassword(){
 
 const MEMBER_SESSION_KEY = 'chilimba_member_session';
 
-// tokens is the object returned by signInWithCustomToken/refreshIdToken:
-// { idToken, refreshToken, expiresIn }. Omit it to keep an existing
-// session's tokens (e.g. if only memberId needs restoring).
-function setMemberSession(memberId, tokens){
-  const existing = getMemberSession() || {};
-  const session = {
-    memberId,
-    ts: Date.now(),
-    idToken: tokens ? tokens.idToken : existing.idToken || null,
-    refreshToken: tokens ? tokens.refreshToken : existing.refreshToken || null,
-    expiresAt: tokens ? Date.now() + Number(tokens.expiresIn)*1000 : existing.expiresAt || null
-  };
-  localStorage.setItem(MEMBER_SESSION_KEY, JSON.stringify(session));
+// A "session" is just remembering which member is using this device —
+// there's no token to manage since there's no Firebase Auth involved.
+function setMemberSession(memberId){
+  localStorage.setItem(MEMBER_SESSION_KEY, JSON.stringify({ memberId, ts: Date.now() }));
 }
 function getMemberSession(){
   try{ return JSON.parse(localStorage.getItem(MEMBER_SESSION_KEY)); }catch(e){ return null; }
@@ -638,14 +663,12 @@ function canManageMembers(){
   const officer = currentOfficer();
   if(officer) return officer.role === 'chair' || officer.role === 'vice_chair';
   // Nobody logged in on this device. Open-trust access (no login needed)
-  // only applies before a group has ever been claimed by a chair login —
-  // once someone has logged in as chair for this group, the database
-  // rules require that same auth going forward, so editing without logging
-  // in would fail silently on sync. Reflect that here instead of showing
-  // controls that won't actually save.
-  const groupId = state.settings.activeGroupId;
-  const grp = groupId && state.groups[groupId];
-  if(grp && grp.chairId) return false;
+  // only applies before the group has ever been claimed by a chair login —
+  // once someone has logged in as chair, the database rules require that
+  // same auth going forward, so editing without logging in would fail
+  // silently on sync. Reflect that here instead of showing controls that
+  // won't actually save.
+  if(state.group && state.group.chairId) return false;
   return true;
 }
 // Treasurer and vice treasurer manage the money: log contributions,
@@ -653,148 +676,87 @@ function canManageMembers(){
 function canManageFinance(){
   const officer = currentOfficer();
   if(officer) return officer.role === 'treasurer' || officer.role === 'vice_treasurer';
-  const groupId = state.settings.activeGroupId;
-  const grp = groupId && state.groups[groupId];
-  if(grp && grp.treasurerId) return false;
+  if(state.group && state.group.treasurerId) return false;
   return true;
 }
 // Backwards-compatible alias — historically the single "full admin" gate.
 // Kept so any stray reference still resolves sensibly (roster + finance).
 function canEdit(){ return canManageMembers() || canManageFinance(); }
 
-/* ---- Identity Toolkit REST (token exchange, no Firebase SDK needed) ---- */
-async function signInWithCustomToken(customToken){
-  if(!FB_CONFIG.apiKey) throw new Error('FB_CONFIG.apiKey is not set — add your Firebase Web API key.');
-  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${FB_CONFIG.apiKey}`;
-  const res = await fetch(url, {
-    method:'POST', headers:{ 'Content-Type':'application/json' },
-    body: JSON.stringify({ token: customToken, returnSecureToken: true })
-  });
-  if(!res.ok) throw new Error('Token exchange failed: ' + res.status);
-  const data = await res.json();
-  return { idToken: data.idToken, refreshToken: data.refreshToken, expiresIn: Number(data.expiresIn) };
-}
-
-async function refreshIdToken(refreshToken){
-  if(!FB_CONFIG.apiKey) throw new Error('FB_CONFIG.apiKey is not set — add your Firebase Web API key.');
-  const url = `https://securetoken.googleapis.com/v1/token?key=${FB_CONFIG.apiKey}`;
-  const res = await fetch(url, {
-    method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded' },
-    body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`
-  });
-  if(!res.ok) throw new Error('Token refresh failed: ' + res.status);
-  const data = await res.json();
-  return { idToken: data.id_token, refreshToken: data.refresh_token, expiresIn: Number(data.expires_in) };
-}
-
-// Returns a usable ID token for the current member session, refreshing it
-// first if it's expired (or about to). Returns null if there's no session
-// or the refresh fails — callers should treat that as "please log in again".
-async function getValidIdToken(){
-  const session = getMemberSession();
-  if(!session || !session.refreshToken) return null;
-  if(session.expiresAt && Date.now() < session.expiresAt - 60000){
-    return session.idToken;
-  }
-  try{
-    const fresh = await refreshIdToken(session.refreshToken);
-    setMemberSession(session.memberId, fresh);
-    return fresh.idToken;
-  }catch(e){
-    return null;
-  }
-}
-
-/* ---- Cloud Function calls ---- */
-// Verifies phone+password server-side and logs in. Returns
-// { member, tokens } on success or { error } on failure — never throws
+// Verifies phone+password against the hash stored on the member record.
+// Returns { member } on success or { error } on failure — never throws
 // for expected failures (wrong password, no account, etc).
 async function loginMember(phone, password){
-  if(!FB_CONFIG.functionsBaseUrl){
-    return { error: "Login isn't configured yet — ask your treasurer to set this up." };
+  if(!FB_CONFIG.dbUrl){
+    return { error: "This device isn't connected yet — ask your treasurer to set this up." };
   }
-  let res;
+  let remoteMembers;
   try{
-    res = await fetch(FB_CONFIG.functionsBaseUrl.replace(/\/$/,'') + '/loginMember', {
-      method:'POST', headers:{ 'Content-Type':'application/json' },
-      body: JSON.stringify({ phone, password })
-    });
+    remoteMembers = await fbRestLoad('members');
   }catch(e){
     return { error: 'Could not reach the login service. Check your connection.' };
   }
-  const data = await res.json().catch(()=>({}));
-  if(!res.ok) return { error: data.error || 'Login failed.' };
+  const entry = Object.values(remoteMembers || {}).find(m => m.phone === phone);
+  if(!entry) return { error: 'No account found with that phone number.' };
+  if(!entry.passwordHash) return { error: 'This account has no password set yet — ask your chairperson to set one.' };
 
-  const tokens = await signInWithCustomToken(data.token);
+  const hash = await hashPassword(password);
+  if(hash !== entry.passwordHash) return { error: 'Incorrect password.' };
 
   // Cache the member + group locally so the dashboard works offline after
   // this first successful login.
-  state.members[data.member.id] = Object.assign({}, state.members[data.member.id], data.member);
-  if(FB_CONFIG.dbUrl){
-    try{
-      const remoteGroup = await fbRestLoad('groups/'+data.member.groupId, tokens.idToken);
-      if(remoteGroup) state.groups[data.member.groupId] = remoteGroup;
-    }catch(e){ /* keep whatever group data we already have locally */ }
+  state.members[entry.id] = Object.assign({}, state.members[entry.id], entry);
+  try{
+    const remoteGroup = await fbRestLoad('group');
+    if(remoteGroup) state.group = remoteGroup;
+  }catch(e){ /* keep whatever group data we already have locally */ }
 
-    // First chair to log in for a group "claims" it by writing chairId onto
-    // the group record, and likewise the first treasurer claims treasurerId.
-    // The database rules only allow each of these exact writes once per
-    // group (before that field exists) with no auth required — after that,
-    // only a logged-in chair/treasurer whose token groupId matches this
-    // group can write to it at all. This is what actually closes off
-    // anonymous/open-trust writes going forward.
-    if(data.member.role === 'chair' && state.groups[data.member.groupId] && !state.groups[data.member.groupId].chairId){
-      try{
-        const grp = Object.assign({}, state.groups[data.member.groupId], { chairId: data.member.id });
-        await fbRestSave('groups/'+data.member.groupId, grp, tokens.idToken);
-        state.groups[data.member.groupId] = grp;
-      }catch(e){ /* not fatal — will retry claiming on next login */ }
-    }
-    if(data.member.role === 'treasurer' && state.groups[data.member.groupId] && !state.groups[data.member.groupId].treasurerId){
-      try{
-        const grp = Object.assign({}, state.groups[data.member.groupId], { treasurerId: data.member.id });
-        await fbRestSave('groups/'+data.member.groupId, grp, tokens.idToken);
-        state.groups[data.member.groupId] = grp;
-      }catch(e){ /* not fatal — will retry claiming on next login */ }
-    }
+  // First chair to log in "claims" the group by writing chairId onto the
+  // group record, and likewise the first treasurer claims treasurerId.
+  // There's no per-user auth backing this — it's an open-trust convention,
+  // same as the rest of this app — but it still stops the UI from treating
+  // an unclaimed group as claimable twice.
+  if(entry.role === 'chair' && state.group && !state.group.chairId){
+    try{
+      const grp = Object.assign({}, state.group, { chairId: entry.id });
+      await fbRestSave('group', grp);
+      state.group = grp;
+    }catch(e){ /* not fatal — will retry claiming on next login */ }
+  }
+  if(entry.role === 'treasurer' && state.group && !state.group.treasurerId){
+    try{
+      const grp = Object.assign({}, state.group, { treasurerId: entry.id });
+      await fbRestSave('group', grp);
+      state.group = grp;
+    }catch(e){ /* not fatal — will retry claiming on next login */ }
   }
   saveState();
-  return { member: data.member, tokens };
+  return { member: entry };
 }
 
-// idToken is only passed when a logged-in member is changing their OWN
-// password — the Function checks it matches memberId. Omitted for
-// treasurer-initiated add/reset (same open trust model as the rest of the app).
-async function setMemberPasswordRemote(memberId, newPassword, idToken){
-  if(!FB_CONFIG.functionsBaseUrl){
-    toast("Password sync isn't configured yet — set FB_CONFIG.functionsBaseUrl.");
+// Hashes newPassword and writes it straight to the member's record.
+// Same open-trust model as the rest of the app's writes — whoever has
+// the app open (chairperson adding someone, or a member changing their
+// own password) can call this.
+async function setMemberPassword(memberId, newPassword){
+  if(!FB_CONFIG.dbUrl){
+    toast("This device isn't connected yet — set FB_CONFIG.dbUrl.");
     return false;
   }
-  const headers = { 'Content-Type':'application/json' };
-  if(idToken) headers['Authorization'] = 'Bearer ' + idToken;
-  let res;
+  const passwordHash = await hashPassword(newPassword);
+  const m = state.members[memberId];
+  if(m){ m.passwordHash = passwordHash; saveState(); }
   try{
-    res = await fetch(FB_CONFIG.functionsBaseUrl.replace(/\/$/,'') + '/setMemberPassword', {
-      method:'POST', headers, body: JSON.stringify({ memberId, newPassword })
-    });
+    await fbRestSave('members/'+memberId+'/passwordHash', passwordHash);
+    return true;
   }catch(e){
     toast('Could not reach the server — check your connection.');
     return false;
   }
-  const data = await res.json().catch(()=>({}));
-  if(!res.ok){ toast(data.error || 'Could not set password.'); return false; }
-  return true;
 }
 
 async function changeMemberPassword(memberId, newPassword){
-  const idToken = await getValidIdToken();
-  if(!idToken){
-    toast('Your session expired — please log in again.');
-    clearMemberSession();
-    showMemberAuth();
-    return false;
-  }
-  return setMemberPasswordRemote(memberId, newPassword, idToken);
+  return setMemberPassword(memberId, newPassword);
 }
 
 async function changeMemberPhone(memberId, newPhone){
@@ -811,27 +773,27 @@ async function changeMemberPhone(memberId, newPhone){
 
 
 function computeMemberDashboard(member){
-  const grp = state.groups[member.groupId];
+  const grp = state.group;
   if(!grp) return null;
   const cycle = grp.currentCycle;
   const cycleRecord = Object.values(state.contributions).find(
-    c => c.groupId===member.groupId && c.memberId===member.id && c.cycle===cycle
+    c => c.memberId===member.id && c.cycle===cycle
   );
   const amountDue = grp.contribution;
   const amountPaid = cycleRecord ? cycleRecord.amountPaid : 0;
-  const balance = memberRunningBalance(member.groupId, member.id, cycle);
+  const balance = memberRunningBalance(member.id, cycle);
   const paidThisCycle = balance >= 0;
   const creditBalance = Math.max(0, balance);
   const owedBalance = Math.max(0, -balance);
 
   const history = Object.values(state.contributions)
-    .filter(c => c.groupId===member.groupId && c.memberId===member.id)
+    .filter(c => c.memberId===member.id)
     .sort((a,b)=>b.cycle-a.cycle);
 
   const rotationNumber = grp.rotationNumber || 1;
   const paidOutSet = new Set(
     Object.values(state.payouts)
-      .filter(p=>p.groupId===member.groupId && (p.rotationNumber||1)===rotationNumber)
+      .filter(p=>(p.rotationNumber||1)===rotationNumber)
       .map(p=>p.memberId)
   );
   const receivedThisRotation = paidOutSet.has(member.id);
@@ -845,7 +807,7 @@ function computeMemberDashboard(member){
     }
   }
 
-  const ledger = computeLedger(member.groupId);
+  const ledger = computeLedger();
 
   return {
     grp, cycle, amountDue, amountPaid, paidThisCycle, creditBalance, owedBalance, history,
@@ -866,94 +828,82 @@ async function flushPendingSync(){
   if(!FB_CONFIG.dbUrl) return;
   let pending = JSON.parse(localStorage.getItem(PENDING_KEY) || '[]');
   if(!pending.length) return;
-  // Attach whoever's logged in on this device (treasurer, chair, or member)
-  // so the database rules can check auth.token.role instead of trusting an
-  // anonymous write. If nobody's logged in yet, this is null — only the
-  // bootstrap writes (new group, first treasurer) will be accepted by the
-  // rules in that case; everything else fails and stays queued for retry.
-  const idToken = await getValidIdToken();
+  // No per-user auth to attach — every write is open-trust, same as the
+  // rest of this app. Rules should check data shape, not identity.
   const remaining = [];
   for(const item of pending){
     try{
-      await fbRestSave(item.path, item.data, idToken || undefined);
+      await fbRestSave(item.path, item.data);
     }catch(e){
-      remaining.push(item); // keep for retry — permissions error or offline
+      remaining.push(item); // keep for retry — offline or a rules rejection
     }
   }
   localStorage.setItem(PENDING_KEY, JSON.stringify(remaining));
 }
 
-async function fbRestSave(path, data, idToken){
-  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + path + '.json' + (idToken ? '?auth='+idToken : '');
+async function fbRestSave(path, data){
+  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + path + '.json';
   const res = await fetch(url, { method:'PUT', body: JSON.stringify(data) });
   if(!res.ok) throw new Error('fbRestSave failed: ' + res.status);
   return res.json();
 }
 
-async function fbRestLoad(path, idToken){
-  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + path + '.json' + (idToken ? '?auth='+idToken : '');
+async function fbRestLoad(path){
+  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + path + '.json';
   const res = await fetch(url);
   if(!res.ok) throw new Error('fbRestLoad failed: ' + res.status);
   return res.json();
 }
 
-/* ---------- member-authenticated sync (bypasses the treasurer's open queue) ---------- */
-// Member writes are sent immediately with their ID token attached, since the
-// rules now check auth.uid for these paths. Best-effort — if it's offline or
-// the token can't be refreshed, the change stays saved locally and the
-// caller is told to retry once back online (no retry queue for these yet).
+/* ---------- member sync ---------- */
+// Sent immediately, same open-trust write model as everything else in
+// this app. Best-effort — if it's offline, the change stays saved locally
+// and the caller is told to retry once back online.
 async function memberSync(path, data){
-  const idToken = await getValidIdToken();
-  if(!idToken){
-    throw new Error('Not signed in — please log in again to sync this change.');
-  }
-  return fbRestSave(path, data, idToken);
+  return fbRestSave(path, data);
 }
 
 /* ---------------------- tier helpers ---------------------- */
 function currentLimits(){
   return TIER_LIMITS[state.settings.tier] || TIER_LIMITS.free;
 }
-function groupCount(){ return Object.keys(state.groups).length; }
-function membersInGroup(groupId){
-  return Object.values(state.members).filter(m => m.groupId === groupId && m.status !== 'exited');
+function allMembers(){
+  return Object.values(state.members).filter(m => m.status !== 'exited');
+}
+function totalMemberCount(){
+  return allMembers().length;
 }
 
 /* ---------------------- group / member CRUD ---------------------- */
-function createGroup({name, amount, frequency, startDate, reserveAmount}){
-  const limits = currentLimits();
-  if(groupCount() >= limits.groups){
-    toast('Free tier allows 1 group. Upgrade to add more.');
-    return null;
-  }
-  const id = uid('grp');
-  state.groups[id] = {
-    id, name, contribution:Number(amount), frequency, startDate,
+// There is only ever one savings circle per account — this sets it up once.
+function setupGroup({name, amount, frequency, startDate, reserveAmount}){
+  state.group = {
+    name, contribution:Number(amount), frequency, startDate,
     reserveAmount: Number(reserveAmount) || 0,
     rotationOrder: [], currentCycle: 1, rotationNumber: 1, createdAt: Date.now()
   };
-  state.settings.activeGroupId = id;
   saveState();
-  queueSync('groups/'+id, state.groups[id]);
-  return id;
+  queueSync('group', state.group);
+  return true;
 }
 
-function addMember(groupId, {name, phone, role}){
+function addMember({name, phone, role}){
   const limits = currentLimits();
-  if(membersInGroup(groupId).length >= limits.membersPerGroup){
+  if(totalMemberCount() >= limits.totalMembers){
     toast('Member limit reached for your plan. Upgrade for more.');
     return null;
   }
   const id = uid('mem');
-  const grp = state.groups[groupId];
+  const grp = state.group;
   state.members[id] = {
-    id, groupId, name, phone, role: role || 'member',
+    id, name, phone, role: role || 'member',
     joinDate: new Date().toISOString().slice(0,10),
     position: grp.rotationOrder.length, status:'active'
   };
   grp.rotationOrder.push(id);
   saveState();
   queueSync('members/'+id, state.members[id]);
+  queueSync('group', grp);
   return id;
 }
 
@@ -969,21 +919,22 @@ function removeMember(memberId){
   const m = state.members[memberId];
   if(!m) return;
   m.status = 'exited';
-  const grp = state.groups[m.groupId];
+  const grp = state.group;
   grp.rotationOrder = grp.rotationOrder.filter(id => id !== memberId);
   saveState();
   queueSync('members/'+memberId, m);
+  queueSync('group', grp);
 }
 
 /* ---------------------- member payment submissions ---------------------- */
 // Members submit a claim; it never touches the ledger directly. Only the
 // treasurer's approve action calls recordContribution, keeping the treasurer
 // as the single source of truth for what's actually been received.
-function submitPaymentClaim(groupId, memberId, {amount, method, note}){
-  const grp = state.groups[groupId];
+function submitPaymentClaim(memberId, {amount, method, note}){
+  const grp = state.group;
   const id = uid('sub');
   const record = {
-    id, groupId, memberId, cycle: grp.currentCycle,
+    id, memberId, cycle: grp.currentCycle,
     amount: Number(amount), method, note: note||'',
     date: new Date().toISOString().slice(0,10),
     status: 'pending'
@@ -999,7 +950,7 @@ function submitPaymentClaim(groupId, memberId, {amount, method, note}){
 function approvePaymentSubmission(subId){
   const sub = state.paymentSubmissions[subId];
   if(!sub || sub.status !== 'pending') return;
-  recordContribution(sub.groupId, sub.memberId, sub.cycle, sub.amount, sub.method);
+  recordContribution(sub.memberId, sub.cycle, sub.amount, sub.method);
   sub.status = 'approved';
   sub.reviewedAt = new Date().toISOString().slice(0,10);
   saveState();
@@ -1016,22 +967,22 @@ function rejectPaymentSubmission(subId, reason){
   queueSync('paymentSubmissions/'+subId, sub);
 }
 
-function memberSubmissions(groupId, memberId){
+function memberSubmissions(memberId){
   return Object.values(state.paymentSubmissions)
-    .filter(s=>s.groupId===groupId && s.memberId===memberId)
+    .filter(s=>s.memberId===memberId)
     .sort((a,b)=> (b.date||'').localeCompare(a.date||''));
 }
 
-function pendingSubmissions(groupId){
+function pendingSubmissions(){
   return Object.values(state.paymentSubmissions)
-    .filter(s=>s.groupId===groupId && s.status==='pending')
+    .filter(s=>s.status==='pending')
     .sort((a,b)=> (a.date||'').localeCompare(b.date||''));
 }
 
 // Sync here is push-only (no live listeners), so the treasurer's device
 // won't see a member's submission until it explicitly pulls. Called when
 // opening the Contributions tab, and via the manual refresh button.
-async function refreshPendingSubmissions(groupId){
+async function refreshPendingSubmissions(){
   if(!FB_CONFIG.dbUrl) return;
   try{
     const remote = await fbRestLoad('paymentSubmissions');
@@ -1044,14 +995,14 @@ async function refreshPendingSubmissions(groupId){
 }
 
 /* ---------------------- contributions ---------------------- */
-function recordContribution(groupId, memberId, cycle, amountPaid, method){
-  const grp = state.groups[groupId];
+function recordContribution(memberId, cycle, amountPaid, method){
+  const grp = state.group;
   const existing = Object.values(state.contributions).find(
-    c => c.groupId===groupId && c.memberId===memberId && c.cycle===cycle
+    c => c.memberId===memberId && c.cycle===cycle
   );
   const due = grp.contribution;
   const paid = Number(amountPaid);
-  const record = existing || { id: uid('con'), groupId, memberId, cycle };
+  const record = existing || { id: uid('con'), memberId, cycle };
   record.amountDue = due;
   record.amountPaid = paid;
   record.date = new Date().toISOString().slice(0,10);
@@ -1068,23 +1019,23 @@ function recordContribution(groupId, memberId, cycle, amountPaid, method){
 // negative means they're behind. Tracking it this way is what makes an
 // overpayment in one cycle carry forward as credit in the next, with no
 // separate "credit" record needed — it falls out of the running total.
-function memberRunningBalance(groupId, memberId, uptoCycle){
-  const grp = state.groups[groupId];
+function memberRunningBalance(memberId, uptoCycle){
+  const grp = state.group;
   const totalPaid = Object.values(state.contributions)
-    .filter(c => c.groupId===groupId && c.memberId===memberId && c.cycle<=uptoCycle)
+    .filter(c => c.memberId===memberId && c.cycle<=uptoCycle)
     .reduce((s,c)=>s+c.amountPaid, 0);
   const totalDue = grp.contribution * uptoCycle;
   return totalPaid - totalDue;
 }
 
-function getCycleStatus(groupId, cycle){
-  const members = membersInGroup(groupId);
-  const grp = state.groups[groupId];
+function getCycleStatus(cycle){
+  const members = allMembers();
+  const grp = state.group;
   return members.map(m=>{
     const c = Object.values(state.contributions).find(
-      x => x.groupId===groupId && x.memberId===m.id && x.cycle===cycle
+      x => x.memberId===m.id && x.cycle===cycle
     );
-    const balance = memberRunningBalance(groupId, m.id, cycle);
+    const balance = memberRunningBalance(m.id, cycle);
     return {
       member: m,
       paid: balance >= 0,
@@ -1101,17 +1052,17 @@ function getCycleStatus(groupId, cycle){
 // collected, minus everything already paid out, minus the agreed reserve
 // the group has chosen to hold back. Payouts are capped to this, so the
 // group can never pay out more than it has actually received.
-function availableBalance(groupId){
-  const ledger = computeLedger(groupId);
-  const grp = state.groups[groupId];
+function availableBalance(){
+  const ledger = computeLedger();
+  const grp = state.group;
   return Math.max(0, ledger.totalCollected - ledger.totalPaidOut - (grp.reserveAmount||0));
 }
 
-function suggestNextPayout(groupId){
-  const grp = state.groups[groupId];
+function suggestNextPayout(){
+  const grp = state.group;
   const paidOut = new Set(
     Object.values(state.payouts)
-      .filter(p=>p.groupId===groupId && (p.rotationNumber||1)===(grp.rotationNumber||1))
+      .filter(p=>(p.rotationNumber||1)===(grp.rotationNumber||1))
       .map(p=>p.memberId)
   );
   for(const memberId of grp.rotationOrder){
@@ -1122,17 +1073,17 @@ function suggestNextPayout(groupId){
 
 // Returns { ok:true, newRotation:bool } on success, or { error } if the
 // requested amount exceeds what's actually available to pay out.
-function markPayout(groupId, memberId, cycle, amount){
-  const grp = state.groups[groupId];
+function markPayout(memberId, cycle, amount){
+  const grp = state.group;
   const payAmount = Number(amount);
-  const available = availableBalance(groupId);
+  const available = availableBalance();
   if(payAmount > available){
     return { error: `Only ${fmtK(available)} is available to pay out right now (after the reserve). Reduce the amount or wait for more contributions.` };
   }
 
   const id = uid('pay');
   const rotationNumber = grp.rotationNumber || 1;
-  const record = { id, groupId, memberId, cycle, amount:payAmount, rotationNumber, date:new Date().toISOString().slice(0,10), confirmed:true };
+  const record = { id, memberId, cycle, amount:payAmount, rotationNumber, date:new Date().toISOString().slice(0,10), confirmed:true };
   state.payouts[id] = record;
   grp.currentCycle += 1;
 
@@ -1141,7 +1092,7 @@ function markPayout(groupId, memberId, cycle, amount){
   // same members, same order, fresh round of payouts.
   const paidOutThisRotation = new Set(
     Object.values(state.payouts)
-      .filter(p=>p.groupId===groupId && (p.rotationNumber||1)===rotationNumber)
+      .filter(p=>(p.rotationNumber||1)===rotationNumber)
       .map(p=>p.memberId)
   );
   const newRotation = grp.rotationOrder.length > 0 && grp.rotationOrder.every(mid => paidOutThisRotation.has(mid));
@@ -1151,36 +1102,36 @@ function markPayout(groupId, memberId, cycle, amount){
 
   saveState();
   queueSync('payouts/'+id, record);
-  queueSync('groups/'+groupId, grp);
+  queueSync('group', grp);
   return { ok:true, newRotation };
 }
 
 /* ---------------------- ledger ---------------------- */
-function computeLedger(groupId){
-  const contributions = Object.values(state.contributions).filter(c=>c.groupId===groupId);
-  const payouts = Object.values(state.payouts).filter(p=>p.groupId===groupId);
+function computeLedger(){
+  const contributions = Object.values(state.contributions);
+  const payouts = Object.values(state.payouts);
   const totalCollected = contributions.reduce((s,c)=>s+c.amountPaid,0);
   const totalPaidOut = payouts.reduce((s,p)=>s+p.amount,0);
-  const members = membersInGroup(groupId);
-  const grp = state.groups[groupId];
+  const members = allMembers();
+  const grp = state.group;
   const outstanding = members.map(m=>{
     // Running balance, not a per-cycle sum — an overpayment in an earlier
     // cycle offsets a shortfall later (and vice versa) instead of being
     // discarded cycle-by-cycle.
-    const balance = memberRunningBalance(groupId, m.id, grp.currentCycle);
+    const balance = memberRunningBalance(m.id, grp.currentCycle);
     return { member:m, owed: Math.max(0, -balance), credit: Math.max(0, balance) };
   });
   return { totalCollected, totalPaidOut, balance: totalCollected-totalPaidOut, outstanding };
 }
 
 /* ---------------------- WhatsApp summary ---------------------- */
-function generateWhatsAppSummary(groupId){
-  const grp = state.groups[groupId];
+function generateWhatsAppSummary(){
+  const grp = state.group;
   const cycle = grp.currentCycle;
-  const status = getCycleStatus(groupId, cycle);
+  const status = getCycleStatus(cycle);
   const paidList = status.filter(s=>s.paid);
   const dueList = status.filter(s=>!s.paid);
-  const available = availableBalance(groupId);
+  const available = availableBalance();
   const reserve = grp.reserveAmount || 0;
   let msg = `*${grp.name} — Cycle ${cycle}*\n`;
   msg += `Contribution: ${fmtK(grp.contribution)} per member\n\n`;
@@ -1190,7 +1141,7 @@ function generateWhatsAppSummary(groupId){
   msg += dueList.length ? dueList.map(s=>`- ${s.member.name} (owes ${fmtK(s.owed)})`).join('\n') : '- everyone is up to date';
   msg += `\n\n💰 Available to pay out: ${fmtK(available)}`;
   if(reserve > 0) msg += ` (${fmtK(reserve)} held in reserve)`;
-  const next = suggestNextPayout(groupId);
+  const next = suggestNextPayout();
   if(next) msg += `\n\n🏆 Next payout: ${next.name}`;
   return msg;
 }
@@ -1199,25 +1150,24 @@ function generateWhatsAppSummary(groupId){
 
 function render(){
   const app = document.getElementById('app');
-  const groupId = state.settings.activeGroupId;
-  document.getElementById('tabsNav').style.display = groupId ? 'flex' : 'none';
+  document.getElementById('tabsNav').style.display = state.group ? 'flex' : 'none';
   const officer = currentOfficer();
-  const groupName = groupId ? state.groups[groupId].name : 'No group yet';
+  const groupName = state.group ? state.group.name : 'No group yet';
   document.getElementById('headerGroupName').textContent = officer ? `${groupName} · ${roleLabel(officer.role)} (${officer.name})` : groupName;
   document.getElementById('officerLogin').style.display = officer ? 'none' : 'inline-flex';
   document.getElementById('officerLogout').style.display = officer ? 'inline-flex' : 'none';
 
-  if(!groupId){
+  if(!state.group){
     app.innerHTML = renderNoGroup();
     bindNoGroup();
     return;
   }
 
-  if(activeTab === 'overview') { app.innerHTML = renderOverview(groupId); bindOverview(groupId); }
-  else if(activeTab === 'members') { app.innerHTML = renderMembers(groupId); bindMembers(groupId); }
-  else if(activeTab === 'contributions') { app.innerHTML = renderContributions(groupId); bindContributions(groupId); refreshPendingSubmissions(groupId); }
-  else if(activeTab === 'payouts') { app.innerHTML = renderPayouts(groupId); bindPayouts(groupId); }
-  else if(activeTab === 'share') { app.innerHTML = renderShare(groupId); bindShare(groupId); }
+  if(activeTab === 'overview') { app.innerHTML = renderOverview(); bindOverview(); }
+  else if(activeTab === 'members') { app.innerHTML = renderMembers(); bindMembers(); }
+  else if(activeTab === 'contributions') { app.innerHTML = renderContributions(); bindContributions(); refreshPendingSubmissions(); }
+  else if(activeTab === 'payouts') { app.innerHTML = renderPayouts(); bindPayouts(); }
+  else if(activeTab === 'share') { app.innerHTML = renderShare(); bindShare(); }
 
   document.querySelectorAll('nav.tabs button').forEach(b=>{
     b.classList.toggle('active', b.dataset.tab === activeTab);
@@ -1229,9 +1179,9 @@ function renderNoGroup(){
   <div class="card">
     <div class="empty">
       <div class="big">👛</div>
-      <p>Set up your first chilimba group to get started.</p>
+      <p>Set up your chilimba circle to get started.</p>
     </div>
-    <div class="field"><label>Group name</label><input id="ng_name" placeholder="e.g. Kabwe Market Ladies"></div>
+    <div class="field"><label>Circle name</label><input id="ng_name" placeholder="e.g. Kabwe Market Ladies"></div>
     <div class="row">
       <div class="field"><label>Contribution (K)</label><input id="ng_amount" type="number" placeholder="200"></div>
       <div class="field"><label>Frequency</label>
@@ -1240,7 +1190,7 @@ function renderNoGroup(){
     </div>
     <div class="field"><label>Start date</label><input id="ng_start" type="date"></div>
     <div class="field"><label>Agreed reserve (K) <span style="font-weight:400; color:var(--text-dim);">— optional</span></label><input id="ng_reserve" type="number" placeholder="0"></div>
-    <button class="btn full" id="ng_create">Create group</button>
+    <button class="btn full" id="ng_create">Set up circle</button>
   </div>`;
 }
 
@@ -1251,22 +1201,21 @@ function bindNoGroup(){
     const frequency = document.getElementById('ng_freq').value;
     const startDate = document.getElementById('ng_start').value || new Date().toISOString().slice(0,10);
     const reserveAmount = document.getElementById('ng_reserve').value;
-    if(!name || !amount){ toast('Enter a group name and contribution amount'); return; }
-    const id = createGroup({name, amount, frequency, startDate, reserveAmount});
-    if(id){ toast('Group created'); render(); }
+    if(!name || !amount){ toast('Enter a circle name and contribution amount'); return; }
+    const ok = setupGroup({name, amount, frequency, startDate, reserveAmount});
+    if(ok){ toast('Circle set up'); render(); }
   };
 }
 
-function renderOverview(groupId){
-  const grp = state.groups[groupId];
-  const ledger = computeLedger(groupId);
-  const members = membersInGroup(groupId);
+function renderOverview(){
+  const grp = state.group;
+  const ledger = computeLedger();
   const limits = currentLimits();
   const reserve = grp.reserveAmount || 0;
-  const available = availableBalance(groupId);
+  const available = availableBalance();
   const gateHtml = state.settings.tier === 'free' ? `
     <div class="gate no-print">
-      Free plan: <b>1 group</b>, up to <b>8 members</b>. Upgrade to Growth for multiple groups, cloud sync and exports.
+      Free plan: up to <b>8 members</b>. Upgrade to add more members, cloud sync and exports.
     </div>` : '';
   return `
     ${gateHtml}
@@ -1275,7 +1224,7 @@ function renderOverview(groupId){
       <div class="stat-row">
         <div class="stat good"><div class="num">${fmtK(ledger.totalCollected)}</div><div class="label">Total collected</div></div>
         <div class="stat pending"><div class="num">${fmtK(ledger.totalPaidOut)}</div><div class="label">Total paid out</div></div>
-        <div class="stat"><div class="num">${members.length}/${limits.membersPerGroup===Infinity?'∞':limits.membersPerGroup}</div><div class="label">Members</div></div>
+        <div class="stat"><div class="num">${totalMemberCount()}/${limits.totalMembers===Infinity?'∞':limits.totalMembers}</div><div class="label">Members</div></div>
       </div>
       <div class="stat-row" style="margin-top:10px;">
         <div class="stat"><div class="num">${fmtK(available)}</div><div class="label">Available to pay out</div></div>
@@ -1289,12 +1238,12 @@ function renderOverview(groupId){
     </div>
     <div class="card">
       <h2>This cycle</h2>
-      ${renderCycleList(groupId, grp.currentCycle)}
+      ${renderCycleList(grp.currentCycle)}
     </div>`;
 }
 
-function renderCycleList(groupId, cycle){
-  const status = getCycleStatus(groupId, cycle);
+function renderCycleList(cycle){
+  const status = getCycleStatus(cycle);
   if(!status.length) return `<div class="empty">Add members to start tracking contributions.</div>`;
   return status.map(s=>`
     <div class="member-line">
@@ -1303,23 +1252,23 @@ function renderCycleList(groupId, cycle){
     </div>`).join('');
 }
 
-function bindOverview(groupId){
+function bindOverview(){
   const saveBtn = document.getElementById('ov_reserve_save');
   if(!saveBtn) return;
   saveBtn.onclick = ()=>{
     const val = Number(document.getElementById('ov_reserve').value) || 0;
     if(val < 0){ toast('Reserve cannot be negative'); return; }
-    const grp = state.groups[groupId];
+    const grp = state.group;
     grp.reserveAmount = val;
     saveState();
-    queueSync('groups/'+groupId, grp);
+    queueSync('group', grp);
     toast('Reserve updated');
     render();
   };
 }
 
-function renderMembers(groupId){
-  const members = membersInGroup(groupId);
+function renderMembers(){
+  const members = allMembers();
   return `
     ${canManageMembers() ? `
     <div class="card">
@@ -1365,7 +1314,7 @@ function renderMembers(groupId){
     </div>`;
 }
 
-function bindMembers(groupId){
+function bindMembers(){
   const needsLoginBtn = document.getElementById('mem_needs_login');
   if(needsLoginBtn) needsLoginBtn.onclick = ()=>showMemberAuth('login');
   const addBtn = document.getElementById('mem_add');
@@ -1378,9 +1327,9 @@ function bindMembers(groupId){
     if(!phone){ toast('Enter a phone number so this member can log in'); return; }
     let generated = null;
     if(!password){ password = generated = genPassword(); }
-    const id = addMember(groupId, {name, phone, role});
+    const id = addMember({name, phone, role});
     if(id){
-      const ok = await setMemberPasswordRemote(id, password);
+      const ok = await setMemberPassword(id, password);
       if(ok){
         toast(generated ? `Member added — password: ${generated}` : 'Member added');
         if(generated) alert(`${name}'s login details:\nPhone: ${phone}\nPassword: ${generated}\n\nShare these with them — they can change the password after logging in.`);
@@ -1410,7 +1359,7 @@ function bindMembers(groupId){
       const m = state.members[btn.dataset.reset];
       const newPassword = prompt(`New password for ${m.name}:`);
       if(!newPassword) return;
-      const ok = await setMemberPasswordRemote(m.id, newPassword);
+      const ok = await setMemberPassword(m.id, newPassword);
       if(ok){
         toast('Password reset');
         alert(`${m.name}'s new password: ${newPassword}\n\nShare this with them directly.`);
@@ -1419,10 +1368,10 @@ function bindMembers(groupId){
   });
 }
 
-function renderContributions(groupId){
-  const grp = state.groups[groupId];
-  const status = getCycleStatus(groupId, grp.currentCycle);
-  const pending = pendingSubmissions(groupId);
+function renderContributions(){
+  const grp = state.group;
+  const status = getCycleStatus(grp.currentCycle);
+  const pending = pendingSubmissions();
   return `
     ${pending.length ? `
     <div class="card">
@@ -1454,14 +1403,14 @@ function renderContributions(groupId){
     </div>`;
 }
 
-function bindContributions(groupId){
+function bindContributions(){
   document.querySelectorAll('[data-log]').forEach(btn=>{
-    btn.onclick = ()=>openContributionModal(groupId, btn.dataset.log);
+    btn.onclick = ()=>openContributionModal(btn.dataset.log);
   });
   const refreshBtn = document.getElementById('refresh_pending');
   if(refreshBtn) refreshBtn.onclick = async ()=>{
     refreshBtn.textContent = '…';
-    await refreshPendingSubmissions(groupId);
+    await refreshPendingSubmissions();
     toast('Checked for new submissions');
   };
   document.querySelectorAll('[data-approve]').forEach(btn=>{
@@ -1481,10 +1430,10 @@ function bindContributions(groupId){
   });
 }
 
-function openContributionModal(groupId, memberId){
-  const grp = state.groups[groupId];
+function openContributionModal(memberId){
+  const grp = state.group;
   const m = state.members[memberId];
-  const priorBalance = memberRunningBalance(groupId, memberId, grp.currentCycle - 1);
+  const priorBalance = memberRunningBalance(memberId, grp.currentCycle - 1);
   const creditNote = priorBalance > 0 ? `<div class="field-hint" style="margin-top:0;">${m.name} is carrying forward ${fmtK(priorBalance)} in credit from previous cycles — that already counts toward this cycle's due amount.</div>` : (priorBalance < 0 ? `<div class="field-hint" style="margin-top:0;">${m.name} is still short ${fmtK(-priorBalance)} from previous cycles.</div>` : '');
   const bg = document.createElement('div');
   bg.className='modal-bg';
@@ -1505,20 +1454,20 @@ function openContributionModal(groupId, memberId){
   bg.querySelector('#cm_save').onclick = ()=>{
     const amount = bg.querySelector('#cm_amount').value;
     const method = bg.querySelector('#cm_method').value;
-    recordContribution(groupId, memberId, grp.currentCycle, amount, method);
+    recordContribution(memberId, grp.currentCycle, amount, method);
     bg.remove();
     toast('Contribution logged');
     render();
   };
 }
 
-function renderPayouts(groupId){
-  const grp = state.groups[groupId];
-  const next = suggestNextPayout(groupId);
-  const available = availableBalance(groupId);
+function renderPayouts(){
+  const grp = state.group;
+  const next = suggestNextPayout();
+  const available = availableBalance();
   const reserve = grp.reserveAmount || 0;
-  const suggestedAmount = Math.max(0, Math.min(grp.contribution * membersInGroup(groupId).length, available));
-  const history = Object.values(state.payouts).filter(p=>p.groupId===groupId).sort((a,b)=>b.cycle-a.cycle);
+  const suggestedAmount = Math.max(0, Math.min(grp.contribution * allMembers().length, available));
+  const history = Object.values(state.payouts).sort((a,b)=>b.cycle-a.cycle);
   return `
     <div class="card">
       <h2>Suggested payout — Cycle ${grp.currentCycle} (Round ${grp.rotationNumber || 1})</h2>
@@ -1541,19 +1490,19 @@ function renderPayouts(groupId){
     </div>`;
 }
 
-function bindPayouts(groupId){
+function bindPayouts(){
   const btn = document.getElementById('po_confirm');
   if(!btn) return;
   btn.onclick = ()=>{
-    const next = suggestNextPayout(groupId);
+    const next = suggestNextPayout();
     const amount = document.getElementById('po_amount').value;
-    const available = availableBalance(groupId);
+    const available = availableBalance();
     if(Number(amount) > available){
       toast(`Only ${fmtK(available)} is available to pay out right now.`);
       return;
     }
     if(!confirm(`Confirm payout of ${fmtK(amount)} to ${next.name}?`)) return;
-    const result = markPayout(groupId, next.id, state.groups[groupId].currentCycle, amount);
+    const result = markPayout(next.id, state.group.currentCycle, amount);
     if(result.error){
       toast(result.error);
       return;
@@ -1563,12 +1512,12 @@ function bindPayouts(groupId){
   };
 }
 
-function renderShare(groupId){
-  const ledger = computeLedger(groupId);
+function renderShare(){
+  const ledger = computeLedger();
   return `
     <div class="card">
       <h2>WhatsApp summary</h2>
-      <div class="whatsapp-box" id="wa_text">${generateWhatsAppSummary(groupId)}</div>
+      <div class="whatsapp-box" id="wa_text">${generateWhatsAppSummary()}</div>
       <button class="btn full" id="wa_copy">Copy to clipboard</button>
     </div>
     <div class="card">
@@ -1582,9 +1531,9 @@ function renderShare(groupId){
     </div>`;
 }
 
-function bindShare(groupId){
+function bindShare(){
   document.getElementById('wa_copy').onclick = ()=>{
-    const text = generateWhatsAppSummary(groupId);
+    const text = generateWhatsAppSummary();
     navigator.clipboard.writeText(text).then(()=>toast('Copied — paste into WhatsApp'));
   };
   document.getElementById('print_statement').onclick = ()=>window.print();
@@ -1599,7 +1548,7 @@ function renderMemberShellView(){
     showMemberAuth();
     return;
   }
-  const grp = state.groups[member.groupId];
+  const grp = state.group;
   document.getElementById('msMemberName').textContent = member.name;
   document.getElementById('msGroupName').textContent = grp ? grp.name : 'Group';
   document.getElementById('memberApp').innerHTML = renderMemberShell(member, grp);
@@ -1633,7 +1582,7 @@ function renderMemberShell(member, grp){
     </div>
     <div class="card">
       <h2>Your submissions</h2>
-      ${memberSubmissions(member.groupId, member.id).length ? memberSubmissions(member.groupId, member.id).map(s=>`
+      ${memberSubmissions(member.id).length ? memberSubmissions(member.id).map(s=>`
         <div class="member-line">
           <div><div class="member-name">Cycle ${s.cycle} — ${fmtK(s.amount)}</div><div class="member-sub">${s.date} · ${s.method}${s.note ? ' · "'+escapeHtml(s.note)+'"' : ''}</div></div>
           <span class="badge ${s.status==='approved'?'next':''}" style="${s.status==='pending'?'background:var(--warn,#f59e0b);color:#fff;':s.status==='rejected'?'background:var(--danger);color:#fff;':''}">${s.status}</span>
@@ -1659,7 +1608,7 @@ function renderMemberShell(member, grp){
         </div>`).join('') : `<div class="empty">No contributions recorded yet.</div>`}
     </div>
     <div class="card">
-      <h2>Group summary</h2>
+      <h2>Circle summary</h2>
       <div class="member-sub" style="margin-bottom:4px;">${d.grp.name} · ${fmtK(d.grp.contribution)} per member, ${d.grp.frequency}</div>
       <div class="member-sub">Total collected: ${fmtK(d.totalCollected)}</div>
       <div class="member-sub">Total paid out: ${fmtK(d.totalPaidOut)}</div>
@@ -1689,7 +1638,7 @@ function bindMemberShell(member){
       const method = document.getElementById('msub_method').value;
       const note = document.getElementById('msub_note').value.trim();
       if(!amount || Number(amount) <= 0){ toast('Enter a valid amount'); return; }
-      submitPaymentClaim(member.groupId, member.id, {amount, method, note});
+      submitPaymentClaim(member.id, {amount, method, note});
       toast('Submitted — your treasurer will confirm it');
       renderMemberShellView();
     };
@@ -1837,7 +1786,7 @@ document.getElementById('ma_login').addEventListener('click', async ()=>{
       errEl.style.display = 'block';
       return;
     }
-    setMemberSession(result.member.id, result.tokens);
+    setMemberSession(result.member.id);
     if(OFFICER_ROLES.includes(result.member.role)){
       toast(`Logged in as ${roleLabel(result.member.role)}`);
       showApp();
@@ -1883,18 +1832,18 @@ document.getElementById('ma_signup').addEventListener('click', async ()=>{
   const btn = document.getElementById('ma_signup');
   btn.disabled = true; btn.textContent = 'Creating group…';
   try{
-    const groupId = createGroup({name: groupName, amount, frequency, startDate, reserveAmount});
-    if(!groupId){
-      // createGroup() already toasted the reason (e.g. tier limit).
+    const created = setupGroup({name: groupName, amount, frequency, startDate, reserveAmount});
+    if(!created){
+      // setupGroup() already toasted the reason, if any.
       return;
     }
-    const memberId = addMember(groupId, {name, phone, role:'chair'});
+    const memberId = addMember({name, phone, role:'chair'});
     if(!memberId){
       errEl.textContent = 'Could not create your chairperson account — please try again.';
       errEl.style.display = 'block';
       return;
     }
-    const passwordSet = await setMemberPasswordRemote(memberId, password);
+    const passwordSet = await setMemberPassword(memberId, password);
     if(!passwordSet){
       errEl.textContent = 'Group created, but your login could not be saved — check your connection and log in once it is back, or try signing up again.';
       errEl.style.display = 'block';
@@ -1906,7 +1855,7 @@ document.getElementById('ma_signup').addEventListener('click', async ()=>{
       errEl.style.display = 'block';
       return;
     }
-    setMemberSession(result.member.id, result.tokens);
+    setMemberSession(result.member.id);
     toast('Group created — you\'re signed in as chairperson');
     showApp();
   } catch(e){
@@ -1926,7 +1875,7 @@ const existingMemberSession = getMemberSession();
 if(existingMemberSession && state.members[existingMemberSession.memberId]){
   setView('memberShell');
   safeHistory('pushState', { cmView:'memberShell' }, '#member');
-} else if(state.settings.activeGroupId && localStorage.getItem(LANDING_SEEN_KEY)){
+} else if(state.group && localStorage.getItem(LANDING_SEEN_KEY)){
   setView('app');
   safeHistory('pushState', { cmView:'app' }, '#app');
 }
