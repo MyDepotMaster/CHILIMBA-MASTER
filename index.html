@@ -976,17 +976,33 @@ function addMember({name, phone, role}){
     return null;
   }
   const id = uid('mem');
-  const grp = state.group;
   state.members[id] = {
     id, name, phone, role: role || 'member',
     joinDate: new Date().toISOString().slice(0,10),
-    position: grp.rotationOrder.length, status:'active'
+    status:'active'
   };
-  grp.rotationOrder.push(id);
   saveState();
   queueSync('members/'+id, state.members[id]);
-  queueSync('group', grp);
   return id;
+}
+
+// Rotation membership is a separate decision from being a member at all —
+// e.g. a newly joined member might sit out a few cycles, or an officer
+// might not take a payout turn. Adding is a no-op if they're already in.
+function addToRotation(memberId){
+  const grp = state.group;
+  if(grp.rotationOrder.includes(memberId)) return;
+  grp.rotationOrder.push(memberId);
+  saveState();
+  queueSync('group', grp);
+}
+
+function removeFromRotation(memberId){
+  const grp = state.group;
+  if(!grp.rotationOrder.includes(memberId)) return;
+  grp.rotationOrder = grp.rotationOrder.filter(id => id !== memberId);
+  saveState();
+  queueSync('group', grp);
 }
 
 function setMemberRole(memberId, role){
@@ -1001,11 +1017,9 @@ function removeMember(memberId){
   const m = state.members[memberId];
   if(!m) return;
   m.status = 'exited';
-  const grp = state.group;
-  grp.rotationOrder = grp.rotationOrder.filter(id => id !== memberId);
+  removeFromRotation(memberId);
   saveState();
   queueSync('members/'+memberId, m);
-  queueSync('group', grp);
 }
 
 /* ---------------------- member payment submissions ---------------------- */
@@ -1437,6 +1451,7 @@ function bindOverview(){
 
 function renderMembers(){
   const members = allMembers();
+  const grp = state.group;
   return `
     ${canManageMembers() ? `
     <div class="card">
@@ -1454,19 +1469,26 @@ function renderMembers(){
           <option value="vice_treasurer">Vice Treasurer</option>
         </select>
       </div>
-      <div class="field-hint">This phone + password lets them log in to their own dashboard. Vice chair lands on this admin view and can manage members like you; treasurer and vice treasurer land here too but manage contributions and payouts instead.</div>
-      <button class="btn full" id="mem_add">Add to rotation</button>
+      <div class="field-hint">This phone + password lets them log in to their own dashboard. Vice chair lands on this admin view and can manage members like you; treasurer and vice treasurer land here too but manage contributions and payouts instead. Adding someone here doesn't put them in the payout rotation — do that separately below, whenever they're ready to start receiving turns.</div>
+      <button class="btn full" id="mem_add">Add member</button>
     </div>` : `
     <div class="card">
       <div class="empty">${currentOfficer() ? "You're signed in as " + roleLabel(currentOfficer().role).toLowerCase() + " — adding, removing, or editing members is limited to the chairperson and vice chairperson." : "This group is set up for chairperson login. Log in as the chairperson to add, remove, or edit members."}</div>
       ${!currentOfficer() ? `<button class="btn full" id="mem_needs_login" style="margin-top:8px;">Log in as chairperson</button>` : ''}
     </div>`}
     <div class="card">
-      <h2>Members (${members.length}) — rotation order</h2>
-      ${members.length ? members.map((m,i)=>`
+      <h2>Members (${members.length})</h2>
+      ${members.length ? members.map(m=>{
+        const rotIdx = grp.rotationOrder.indexOf(m.id);
+        const inRotation = rotIdx !== -1;
+        return `
         <div class="member-line">
-          <div><div class="member-name">${i+1}. ${m.name}${m.role && m.role!=='member' ? ` <span class="badge next">${roleLabel(m.role)}</span>` : ''}</div><div class="member-sub">${m.phone||''} · joined ${m.joinDate}</div></div>
-          <div class="row" style="flex:none; gap:6px;">
+          <div>
+            <div class="member-name">${inRotation ? (rotIdx+1)+'. ' : ''}${m.name}${m.role && m.role!=='member' ? ` <span class="badge next">${roleLabel(m.role)}</span>` : ''}</div>
+            <div class="member-sub">${m.phone||''} · joined ${m.joinDate}</div>
+            <span class="badge ${inRotation ? 'paid' : 'due'}">${inRotation ? 'In rotation' : 'Not in rotation'}</span>
+          </div>
+          <div class="row" style="flex:none; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
             ${canManageMembers() ? `
             <select data-role="${m.id}" style="font-size:12px;padding:4px;">
               <option value="member" ${(!m.role||m.role==='member')?'selected':''}>Member</option>
@@ -1475,10 +1497,14 @@ function renderMembers(){
               <option value="treasurer" ${m.role==='treasurer'?'selected':''}>Treasurer</option>
               <option value="vice_treasurer" ${m.role==='vice_treasurer'?'selected':''}>Vice Treasurer</option>
             </select>
+            ${inRotation
+              ? `<button class="btn secondary" data-remove-rotation="${m.id}" style="padding:6px 10px;font-size:12px;">Remove from rotation</button>`
+              : `<button class="btn secondary" data-add-rotation="${m.id}" style="padding:6px 10px;font-size:12px;">Add to rotation</button>`}
             <button class="btn secondary" data-reset="${m.id}" style="padding:6px 10px;font-size:12px;">Reset password</button>
             <button class="btn danger" data-remove="${m.id}" style="padding:6px 10px;font-size:12px;">Remove</button>` : ''}
           </div>
-        </div>`).join('') : `<div class="empty">No members yet.</div>`}
+        </div>`;
+      }).join('') : `<div class="empty">No members yet.</div>`}
     </div>`;
 }
 
@@ -1514,9 +1540,24 @@ function bindMembers(){
       render();
     };
   });
+  document.querySelectorAll('[data-add-rotation]').forEach(btn=>{
+    btn.onclick = ()=>{
+      addToRotation(btn.dataset.addRotation);
+      toast('Added to rotation');
+      render();
+    };
+  });
+  document.querySelectorAll('[data-remove-rotation]').forEach(btn=>{
+    btn.onclick = ()=>{
+      if(confirm('Remove this member from the payout rotation? They stay a member — just not in line for a payout.')){
+        removeFromRotation(btn.dataset.removeRotation);
+        render();
+      }
+    };
+  });
   document.querySelectorAll('[data-remove]').forEach(btn=>{
     btn.onclick = ()=>{
-      if(confirm('Remove this member from the rotation?')){
+      if(confirm('Remove this member from the group entirely? This also takes them out of the rotation.')){
         removeMember(btn.dataset.remove);
         render();
       }
