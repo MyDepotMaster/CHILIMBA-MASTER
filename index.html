@@ -443,6 +443,8 @@
     <button data-tab="members"><span class="ic">&#128101;</span>Members</button>
     <button data-tab="contributions"><span class="ic">&#128176;</span>Contribute</button>
     <button data-tab="payouts"><span class="ic">&#127942;</span>Payout</button>
+    <button data-tab="loans"><span class="ic">&#127974;</span>Loans</button>
+    <button data-tab="settings"><span class="ic">&#9881;</span>Settings</button>
     <button data-tab="share"><span class="ic">&#128172;</span>Share</button>
   </nav>
 </div>
@@ -544,9 +546,20 @@ const TIER_LIMITS = {
   growth:  { totalMembers: 60, loans:false, exports:true },
   pro:     { totalMembers: Infinity, loans:true, exports:true }
 };
+const TIER_LABELS = { free:'Free', starter:'Starter', growth:'Growth', pro:'Pro' };
+// K/month — matches the landing page pricing table.
+const TIER_PRICES = { free:0, starter:90, growth:150, pro:300 };
+// Fill in your WhatsApp Business number (with country code, no + or spaces,
+// e.g. '260971234567') so subscription applications ping you directly —
+// there's no central operator admin panel for this app the way MDM/School
+// Pro have, since each group gets its own Firebase project.
+const SUPPORT_WHATSAPP = '';
 
 let state = loadState();
 if(!state.paymentSubmissions) state.paymentSubmissions = {};
+if(!state.loans) state.loans = {};
+if(!state.loanRepayments) state.loanRepayments = {};
+if(!state.subscriptionApplications) state.subscriptionApplications = {};
 let activeTab = 'overview';
 
 function loadState(){
@@ -572,6 +585,7 @@ function loadState(){
   }catch(e){ console.error('State load failed', e); }
   return {
     group:null, members:{}, contributions:{}, payouts:{}, paymentSubmissions:{},
+    loans:{}, loanRepayments:{}, subscriptionApplications:{},
     settings:{ tier:'free', theme:'light' }
   };
 }
@@ -708,8 +722,28 @@ async function loginMember(phone, password){
   state.members[entry.id] = Object.assign({}, state.members[entry.id], entry);
   try{
     const remoteGroup = await fbRestLoad('group');
-    if(remoteGroup) state.group = remoteGroup;
+    if(remoteGroup){
+      // Local-wins merge: if this device has an unsynced rotation/cycle
+      // advance still sitting in the pending queue (e.g. the last payout
+      // of a round was recorded offline), don't let a stale remote pull
+      // revert it — that's what made the rotation look like it "ended"
+      // even though markPayout() already moved it forward. Keep whichever
+      // side is further along; take everything else from remote.
+      const local = state.group;
+      const localAhead = local && (
+        (local.rotationNumber||1) > (remoteGroup.rotationNumber||1) ||
+        ((local.rotationNumber||1) === (remoteGroup.rotationNumber||1) && (local.currentCycle||1) > (remoteGroup.currentCycle||1))
+      );
+      state.group = localAhead
+        ? Object.assign({}, remoteGroup, { rotationNumber: local.rotationNumber, currentCycle: local.currentCycle })
+        : remoteGroup;
+      if(localAhead) queueSync('group', state.group); // re-push so the server catches up
+    }
   }catch(e){ /* keep whatever group data we already have locally */ }
+
+  // Tier is operator-controlled, not something a device can grant itself —
+  // see refreshTierFromRemote() for why this is read-only from the client.
+  await refreshTierFromRemote();
 
   // First chair to log in "claims" the group by writing chairId onto the
   // group record, and likewise the first treasurer claims treasurerId.
@@ -808,11 +842,13 @@ function computeMemberDashboard(member){
   }
 
   const ledger = computeLedger();
+  const loans = memberLoans(member.id).map(l=>Object.assign({}, l, computeLoanSummary(l)));
 
   return {
     grp, cycle, amountDue, amountPaid, paidThisCycle, creditBalance, owedBalance, history,
     receivedThisRotation, position, totalMembers: grp.rotationOrder.length, turnsAhead,
-    totalCollected: ledger.totalCollected, totalPaidOut: ledger.totalPaidOut, balance: ledger.balance
+    totalCollected: ledger.totalCollected, totalPaidOut: ledger.totalPaidOut, balance: ledger.balance,
+    loans
   };
 }
 
@@ -872,6 +908,52 @@ function allMembers(){
 }
 function totalMemberCount(){
   return allMembers().length;
+}
+
+// The client never writes its own tier — only reads it. Firebase rules
+// make the "settings" path read-only from the app (write:false), so the
+// only way a group's tier changes is you editing it directly in the
+// Firebase console after confirming a subscription application. This
+// pulls that down so it takes effect on this device.
+async function refreshTierFromRemote(){
+  if(!FB_CONFIG.dbUrl) return false;
+  try{
+    const remoteSettings = await fbRestLoad('settings');
+    if(remoteSettings && remoteSettings.tier && remoteSettings.tier !== state.settings.tier){
+      state.settings.tier = remoteSettings.tier;
+      saveState();
+      return true;
+    }
+  }catch(e){ /* offline — keep whatever tier is cached locally */ }
+  return false;
+}
+
+function mySubscriptionApplications(){
+  return Object.values(state.subscriptionApplications).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+}
+
+// Records the request locally/remotely for your own records, then opens
+// WhatsApp with the details prefilled so you're notified right away —
+// there's no polling admin panel watching this Firebase project for you.
+function submitSubscriptionApplication({requestedTier, method, transactionId, amount, note}, submittedBy){
+  const id = uid('sub');
+  const record = {
+    id, requestedTier, currentTier: state.settings.tier,
+    method, transactionId: (transactionId||'').trim(), amount: Number(amount)||0,
+    note: (note||'').trim(),
+    submittedByMemberId: submittedBy.id, submittedByName: submittedBy.name,
+    date: new Date().toISOString().slice(0,10), status: 'pending'
+  };
+  state.subscriptionApplications[id] = record;
+  saveState();
+  queueSync('subscriptionApplications/'+id, record);
+
+  if(SUPPORT_WHATSAPP){
+    const grp = state.group;
+    const msg = `Chilimba Master — subscription request\nGroup: ${grp ? grp.name : '(unnamed)'}\nRequested plan: ${TIER_LABELS[requestedTier]} (K${TIER_PRICES[requestedTier]}/month)\nPaid via: ${method}\nTransaction ID: ${record.transactionId || '(none given)'}\nAmount: K${record.amount}\nFrom: ${submittedBy.name}${note ? '\nNote: ' + note : ''}`;
+    window.open(`https://wa.me/${SUPPORT_WHATSAPP}?text=${encodeURIComponent(msg)}`, '_blank');
+  }
+  return { ok:true };
 }
 
 /* ---------------------- group / member CRUD ---------------------- */
@@ -1055,7 +1137,7 @@ function getCycleStatus(cycle){
 function availableBalance(){
   const ledger = computeLedger();
   const grp = state.group;
-  return Math.max(0, ledger.totalCollected - ledger.totalPaidOut - (grp.reserveAmount||0));
+  return Math.max(0, ledger.balance - (grp.reserveAmount||0));
 }
 
 function suggestNextPayout(){
@@ -1106,12 +1188,91 @@ function markPayout(memberId, cycle, amount){
   return { ok:true, newRotation };
 }
 
+/* ---------------------- loans ---------------------- */
+// Simple flat interest (not compounding) over the life of the loan, plus
+// an optional one-time late fee if it's still unpaid past its due date.
+// Both rates are percentages of the principal.
+function computeLoanSummary(loan){
+  const principal = Number(loan.principal);
+  const interestAmount = principal * (Number(loan.interestRate)||0) / 100;
+  const today = new Date().toISOString().slice(0,10);
+  const isOverdue = loan.status !== 'repaid' && loan.dueDate && today > loan.dueDate;
+  const lateFee = isOverdue ? principal * (Number(loan.lateFeeRate)||0) / 100 : 0;
+  const totalOwed = principal + interestAmount + lateFee;
+  const repaidSoFar = Object.values(state.loanRepayments)
+    .filter(r=>r.loanId===loan.id)
+    .reduce((s,r)=>s+Number(r.amount),0);
+  const outstanding = Math.max(0, totalOwed - repaidSoFar);
+  const displayStatus = outstanding <= 0 ? 'repaid' : (isOverdue ? 'overdue' : 'active');
+  return { principal, interestAmount, lateFee, totalOwed, repaidSoFar, outstanding, isOverdue, displayStatus };
+}
+
+function memberLoans(memberId){
+  return Object.values(state.loans)
+    .filter(l=>l.memberId===memberId)
+    .sort((a,b)=>(b.issueDate||'').localeCompare(a.issueDate||''));
+}
+
+function allLoans(){
+  return Object.values(state.loans).sort((a,b)=>(b.issueDate||'').localeCompare(a.issueDate||''));
+}
+
+// Returns { ok:true } or { error } — mirrors markPayout()'s shape. Caps
+// the loan to what's actually sitting in the pot, same as a payout would be.
+function issueLoan({memberId, principal, interestRate, lateFeeRate, dueDate}){
+  if(!currentLimits().loans){
+    return { error: 'Loans are a Pro plan feature. Upgrade to enable lending from the pot.' };
+  }
+  const amount = Number(principal);
+  const available = availableBalance();
+  if(amount > available){
+    return { error: `Only ${fmtK(available)} is available to lend right now (after the reserve).` };
+  }
+  const id = uid('loan');
+  const record = {
+    id, memberId, principal: amount,
+    interestRate: Number(interestRate)||0,
+    lateFeeRate: Number(lateFeeRate)||0,
+    issueDate: new Date().toISOString().slice(0,10),
+    dueDate: dueDate || null,
+    status: 'active'
+  };
+  state.loans[id] = record;
+  saveState();
+  queueSync('loans/'+id, record);
+  return { ok:true };
+}
+
+function recordLoanRepayment(loanId, amount){
+  const loan = state.loans[loanId];
+  if(!loan) return { error: 'Loan not found.' };
+  const amt = Number(amount);
+  if(amt <= 0) return { error: 'Enter a valid amount.' };
+  const id = uid('rep');
+  const record = { id, loanId, memberId: loan.memberId, amount: amt, date: new Date().toISOString().slice(0,10) };
+  state.loanRepayments[id] = record;
+  const summary = computeLoanSummary(loan);
+  if(summary.outstanding - amt <= 0) loan.status = 'repaid';
+  saveState();
+  queueSync('loanRepayments/'+id, record);
+  queueSync('loans/'+loanId, loan);
+  return { ok:true };
+}
+
 /* ---------------------- ledger ---------------------- */
 function computeLedger(){
   const contributions = Object.values(state.contributions);
   const payouts = Object.values(state.payouts);
+  const loans = Object.values(state.loans);
+  const loanRepayments = Object.values(state.loanRepayments);
   const totalCollected = contributions.reduce((s,c)=>s+c.amountPaid,0);
   const totalPaidOut = payouts.reduce((s,p)=>s+p.amount,0);
+  // A loan takes principal out of the pot the moment it's issued; a
+  // repayment brings principal + interest back in. Both are folded into
+  // the same running balance as contributions/payouts — the pot doesn't
+  // care whether cash left as a rotation payout or a loan.
+  const totalLoanedOut = loans.reduce((s,l)=>s+Number(l.principal),0);
+  const totalLoanRepaid = loanRepayments.reduce((s,r)=>s+Number(r.amount),0);
   const members = allMembers();
   const grp = state.group;
   const outstanding = members.map(m=>{
@@ -1121,7 +1282,11 @@ function computeLedger(){
     const balance = memberRunningBalance(m.id, grp.currentCycle);
     return { member:m, owed: Math.max(0, -balance), credit: Math.max(0, balance) };
   });
-  return { totalCollected, totalPaidOut, balance: totalCollected-totalPaidOut, outstanding };
+  return {
+    totalCollected, totalPaidOut, totalLoanedOut, totalLoanRepaid,
+    balance: totalCollected + totalLoanRepaid - totalPaidOut - totalLoanedOut,
+    outstanding
+  };
 }
 
 /* ---------------------- WhatsApp summary ---------------------- */
@@ -1167,6 +1332,8 @@ function render(){
   else if(activeTab === 'members') { app.innerHTML = renderMembers(); bindMembers(); }
   else if(activeTab === 'contributions') { app.innerHTML = renderContributions(); bindContributions(); refreshPendingSubmissions(); }
   else if(activeTab === 'payouts') { app.innerHTML = renderPayouts(); bindPayouts(); }
+  else if(activeTab === 'loans') { app.innerHTML = renderLoans(); bindLoans(); }
+  else if(activeTab === 'settings') { app.innerHTML = renderSettings(); bindSettings(); refreshTierFromRemote().then(changed=>{ if(changed && activeTab==='settings') render(); }); }
   else if(activeTab === 'share') { app.innerHTML = renderShare(); bindShare(); }
 
   document.querySelectorAll('nav.tabs button').forEach(b=>{
@@ -1229,6 +1396,7 @@ function renderOverview(){
       <div class="stat-row" style="margin-top:10px;">
         <div class="stat"><div class="num">${fmtK(available)}</div><div class="label">Available to pay out</div></div>
         <div class="stat"><div class="num">${fmtK(reserve)}</div><div class="label">Reserve held back</div></div>
+        ${limits.loans && ledger.totalLoanedOut > 0 ? `<div class="stat pending"><div class="num">${fmtK(ledger.totalLoanedOut - ledger.totalLoanRepaid)}</div><div class="label">Loans outstanding</div></div>` : ''}
       </div>
       ${canManageFinance() ? `
       <div class="row" style="margin-top:10px;">
@@ -1512,6 +1680,179 @@ function bindPayouts(){
   };
 }
 
+function renderLoans(){
+  const limits = currentLimits();
+  if(!limits.loans){
+    return `
+      <div class="gate no-print">
+        Loans are a <b>Pro plan</b> feature — lend from the pot with interest, due dates, and late fees tracked automatically. Upgrade to enable this tab.
+      </div>`;
+  }
+  const available = availableBalance();
+  const loans = allLoans();
+  const membersById = state.members;
+  const memberOptions = allMembers().map(m=>`<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('');
+  return `
+    ${canManageFinance() ? `
+    <div class="card">
+      <h2>Issue a loan</h2>
+      <div class="member-sub" style="margin-bottom:8px;">${fmtK(available)} available to lend (after the reserve).</div>
+      <div class="field"><label>Borrower</label><select id="ln_member">${memberOptions}</select></div>
+      <div class="row">
+        <div class="field"><label>Principal (K)</label><input id="ln_principal" type="number" max="${available}"></div>
+        <div class="field"><label>Interest (%, flat)</label><input id="ln_interest" type="number" value="10"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Late fee (%, one-time)</label><input id="ln_latefee" type="number" value="0"></div>
+        <div class="field"><label>Due date</label><input id="ln_duedate" type="date"></div>
+      </div>
+      <button class="btn gold full" id="ln_issue">Issue loan</button>
+    </div>` : ''}
+    <div class="card">
+      <h2>Loans (${loans.length})</h2>
+      ${loans.length ? loans.map(l=>{
+        const s = computeLoanSummary(l);
+        const m = membersById[l.memberId];
+        const badgeClass = s.displayStatus === 'repaid' ? 'paid' : (s.displayStatus === 'overdue' ? 'due' : 'next');
+        const badgeLabel = s.displayStatus === 'repaid' ? 'Repaid' : (s.displayStatus === 'overdue' ? 'Overdue' : 'Active');
+        return `
+        <div class="member-line">
+          <div>
+            <div class="member-name">${m ? escapeHtml(m.name) : '—'}</div>
+            <div class="member-sub">${fmtK(l.principal)} principal · ${l.interestRate}% interest${l.dueDate ? ' · due ' + l.dueDate : ''}</div>
+            <div class="member-sub">${fmtK(s.outstanding)} still owed of ${fmtK(s.totalOwed)} total</div>
+          </div>
+          <div style="text-align:right;">
+            <span class="badge ${badgeClass}">${badgeLabel}</span>
+            ${canManageFinance() && s.displayStatus !== 'repaid' ? `<div style="margin-top:6px;"><button class="btn secondary" data-repay="${l.id}" style="padding:4px 10px; font-size:12px;">Record repayment</button></div>` : ''}
+          </div>
+        </div>`;
+      }).join('') : `<div class="empty">No loans issued yet.</div>`}
+    </div>`;
+}
+
+function bindLoans(){
+  const issueBtn = document.getElementById('ln_issue');
+  if(issueBtn){
+    issueBtn.onclick = ()=>{
+      const memberId = document.getElementById('ln_member').value;
+      const principal = document.getElementById('ln_principal').value;
+      const interestRate = document.getElementById('ln_interest').value;
+      const lateFeeRate = document.getElementById('ln_latefee').value;
+      const dueDate = document.getElementById('ln_duedate').value;
+      if(!memberId){ toast('Add a member first'); return; }
+      if(!principal || Number(principal) <= 0){ toast('Enter a loan amount'); return; }
+      const result = issueLoan({memberId, principal, interestRate, lateFeeRate, dueDate});
+      if(result.error){ toast(result.error); return; }
+      toast('Loan issued');
+      render();
+    };
+  }
+  document.querySelectorAll('[data-repay]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const loan = state.loans[btn.dataset.repay];
+      const summary = computeLoanSummary(loan);
+      const amount = prompt(`Repayment amount (${fmtK(summary.outstanding)} still owed):`, summary.outstanding);
+      if(!amount) return;
+      const result = recordLoanRepayment(loan.id, amount);
+      if(result.error){ toast(result.error); return; }
+      toast('Repayment recorded');
+      render();
+    };
+  });
+}
+
+function renderSettings(){
+  const limits = currentLimits();
+  const tier = state.settings.tier;
+  const officer = currentOfficer();
+  const apps = mySubscriptionApplications();
+  const upgradeOptions = ['starter','growth','pro'].filter(t => t !== tier);
+
+  return `
+    <div class="card">
+      <h2>Your plan</h2>
+      <div class="stat-row">
+        <div class="stat good"><div class="num">${TIER_LABELS[tier]}</div><div class="label">Current plan</div></div>
+        <div class="stat"><div class="num">${limits.totalMembers===Infinity ? '∞' : limits.totalMembers}</div><div class="label">Member limit</div></div>
+      </div>
+      <div class="member-sub" style="margin-top:8px;">Loans module: ${limits.loans ? 'included' : 'not included'} · Data exports: ${limits.exports ? 'included' : 'not included'}</div>
+    </div>
+    ${canManageMembers() ? (officer ? `
+    <div class="card">
+      <h2>Request a plan change</h2>
+      ${upgradeOptions.length ? `
+      <div class="field"><label>Plan</label><select id="sub_tier">${upgradeOptions.map(t=>`<option value="${t}">${TIER_LABELS[t]} — K${TIER_PRICES[t]}/month</option>`).join('')}</select></div>
+      <div class="row">
+        <div class="field"><label>Paid via</label>
+          <select id="sub_method">
+            <option>Airtel Money</option>
+            <option>MTN MoMo</option>
+            <option>Bank transfer</option>
+            <option>Cash</option>
+          </select>
+        </div>
+        <div class="field"><label>Amount (K)</label><input id="sub_amount" type="number" value="${TIER_PRICES[upgradeOptions[0]]}"></div>
+      </div>
+      <div class="field"><label>Transaction ID</label><input id="sub_txn" placeholder="Mobile money reference"></div>
+      <div class="field"><label>Note (optional)</label><input id="sub_note" placeholder="Anything else we should know"></div>
+      <button class="btn gold full" id="sub_submit">Submit application</button>
+      <div class="member-sub" style="margin-top:8px;">We'll confirm your payment and activate the plan${SUPPORT_WHATSAPP ? ' — this opens WhatsApp so we see it right away.' : '.'}</div>
+      ` : `<div class="empty">You're already on the top plan.</div>`}
+    </div>` : `
+    <div class="card"><div class="empty">This account isn't signed in as chairperson on this device.</div></div>`
+    ) : `
+    <div class="card">
+      <div class="empty">${officer ? "You're signed in as " + roleLabel(officer.role).toLowerCase() + " — only the chairperson or vice chairperson can request a plan change." : "Log in as the chairperson to request a plan change."}</div>
+      ${!officer ? `<button class="btn full" id="set_needs_login" style="margin-top:8px;">Log in as chairperson</button>` : ''}
+    </div>`}
+    <div class="card">
+      <h2>Your applications</h2>
+      ${apps.length ? apps.map(a=>{
+        const badgeClass = a.status === 'approved' ? 'paid' : (a.status === 'rejected' ? 'due' : 'next');
+        return `
+        <div class="member-line">
+          <div>
+            <div class="member-name">${TIER_LABELS[a.requestedTier]} — K${a.amount}</div>
+            <div class="member-sub">${a.date} · ${escapeHtml(a.method)}${a.transactionId ? ' · ' + escapeHtml(a.transactionId) : ''}</div>
+          </div>
+          <span class="badge ${badgeClass}">${a.status}</span>
+        </div>`;
+      }).join('') : `<div class="empty">No applications submitted yet.</div>`}
+    </div>`;
+}
+
+function bindSettings(){
+  const needsLoginBtn = document.getElementById('set_needs_login');
+  if(needsLoginBtn) needsLoginBtn.onclick = ()=>showMemberAuth('login');
+
+  const tierSel = document.getElementById('sub_tier');
+  const amountInput = document.getElementById('sub_amount');
+  if(tierSel && amountInput){
+    tierSel.onchange = ()=>{ amountInput.value = TIER_PRICES[tierSel.value]; };
+  }
+
+  const submitBtn = document.getElementById('sub_submit');
+  if(submitBtn){
+    submitBtn.onclick = ()=>{
+      const officer = currentOfficer();
+      if(!officer){ toast('Log in as chairperson first'); return; }
+      const requestedTier = document.getElementById('sub_tier').value;
+      const method = document.getElementById('sub_method').value;
+      const transactionId = document.getElementById('sub_txn').value.trim();
+      const amount = document.getElementById('sub_amount').value;
+      const note = document.getElementById('sub_note').value;
+      if(method !== 'Cash' && !transactionId){
+        toast('Enter the transaction ID from your payment');
+        return;
+      }
+      submitSubscriptionApplication({requestedTier, method, transactionId, amount, note}, officer);
+      toast("Application submitted — we'll confirm shortly");
+      render();
+    };
+  }
+}
+
 function renderShare(){
   const ledger = computeLedger();
   return `
@@ -1599,6 +1940,23 @@ function renderMemberShell(member, grp){
             : `${d.turnsAhead} member(s) ahead of you before your payout.`
       }</div>
     </div>
+    ${d.loans.length ? `
+    <div class="card">
+      <h2>Your loans</h2>
+      ${d.loans.map(l=>{
+        const badgeClass = l.displayStatus === 'repaid' ? 'paid' : (l.displayStatus === 'overdue' ? 'due' : 'next');
+        const badgeLabel = l.displayStatus === 'repaid' ? 'Repaid' : (l.displayStatus === 'overdue' ? 'Overdue' : 'Active');
+        return `
+        <div class="member-line">
+          <div>
+            <div class="member-name">${fmtK(l.principal)} loan</div>
+            <div class="member-sub">${l.interestRate}% interest${l.dueDate ? ' · due ' + l.dueDate : ''}</div>
+            <div class="member-sub">${fmtK(l.outstanding)} still owed of ${fmtK(l.totalOwed)} total</div>
+          </div>
+          <span class="badge ${badgeClass}">${badgeLabel}</span>
+        </div>`;
+      }).join('')}
+    </div>` : ''}
     <div class="card">
       <h2>Contribution history</h2>
       ${d.history.length ? d.history.map(c=>`
