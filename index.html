@@ -997,6 +997,33 @@ async function refreshTierFromRemote(){
   return false;
 }
 
+// Applications are approved/rejected remotely from the operator admin
+// panel, not from this device — so this device's local cache of its own
+// applications needs to actively pull status changes back down. Without
+// this, an approved/rejected application stays "pending" here forever,
+// since nothing local ever changes it.
+async function refreshApplicationsFromRemote(){
+  if(!FB_CONFIG.dbUrl) return false;
+  try{
+    const remoteApps = await fbRestLoad('subscriptionApplications');
+    if(!remoteApps) return false;
+    let changed = false;
+    Object.entries(remoteApps).forEach(([id, remoteApp])=>{
+      const local = state.subscriptionApplications[id];
+      if(local && remoteApp.status !== local.status){
+        state.subscriptionApplications[id] = remoteApp;
+        changed = true;
+      } else if(!local){
+        state.subscriptionApplications[id] = remoteApp;
+        changed = true;
+      }
+    });
+    if(changed) saveState();
+    return changed;
+  }catch(e){ /* offline — keep whatever's cached locally */ }
+  return false;
+}
+
 function mySubscriptionApplications(){
   return Object.values(state.subscriptionApplications).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
 }
@@ -1447,7 +1474,9 @@ function render(){
   else if(activeTab === 'settings') {
     app.innerHTML = renderSettings(); bindSettings();
     syncGroupRegistry();
-    refreshTierFromRemote().then(changed=>{ if(changed && activeTab==='settings') render(); });
+    Promise.all([refreshTierFromRemote(), refreshApplicationsFromRemote()]).then(([tierChanged, appsChanged])=>{
+      if((tierChanged || appsChanged) && activeTab==='settings') render();
+    });
   }
   else if(activeTab === 'share') { app.innerHTML = renderShare(); bindShare(); }
 
