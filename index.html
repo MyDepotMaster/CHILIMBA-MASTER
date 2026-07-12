@@ -956,7 +956,10 @@ function syncGroupRegistry(){
     createdAt: grp.createdAt,
     updatedAt: Date.now()
   };
-  fbRestSaveRaw('groupRegistry/' + state.groupId, entry).catch(()=>{});
+  fbRestSaveRaw('groupRegistry/' + state.groupId, entry).catch(e=>{
+    console.error('groupRegistry sync failed', e);
+    toast('Could not reach admin sync — will retry next time this loads.');
+  });
 }
 
 /* ---------- member sync ---------- */
