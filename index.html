@@ -491,11 +491,12 @@
 
       <div id="ma_login_panel" style="display:none;">
         <h2>Log in to your group</h2>
+        <div class="field"><label>Group ID <span style="font-weight:400; color:var(--text-dim);">— only on a new device</span></label><input id="ma_group_id" placeholder="Ask your chairperson for this"></div>
         <div class="field"><label>Phone number</label><input id="ma_phone" placeholder="e.g. 0977123456" inputmode="tel"></div>
         <div class="field"><label>Password</label><input id="ma_password" type="password" placeholder="Your password"></div>
         <button class="btn full" id="ma_login">Log in</button>
         <div class="field-error" id="ma_error" style="display:none;"></div>
-        <div class="field-hint" style="margin-top:10px;">Members, treasurers, vice treasurers, chairs, and vice chairs all log in here — you'll land on the right screen automatically. Don't have login details yet? Ask your chairperson to add you.</div>
+        <div class="field-hint" style="margin-top:10px;">Members, treasurers, vice treasurers, chairs, and vice chairs all log in here — you'll land on the right screen automatically. Logging in on a phone that's never opened this group before? Your chairperson can find the Group ID under Settings → Sync info, and share it with you to paste in above. Don't have login details yet? Ask your chairperson to add you.</div>
       </div>
     </div>
   </div>
@@ -593,6 +594,28 @@ function loadState(){
     loans:{}, loanRepayments:{}, subscriptionApplications:{},
     settings:{ tier:'free', theme:'light' }
   };
+}
+
+// Points this device at a different group's Firebase branch — either a
+// freshly minted one (signup) or an existing one a member is joining by
+// its shared Group ID (login). Either way, local state must never mix
+// data from two different groupIds, so this flushes whatever's pending
+// for the CURRENT group first (best effort, so a real previous group on
+// this device doesn't lose unsynced changes), then wipes every local
+// collection before adopting the new id.
+async function switchGroupContext(newGroupId){
+  try{ await flushPendingSync(); }catch(e){ /* best effort */ }
+  localStorage.removeItem(PENDING_KEY);
+  state.group = null;
+  state.groupId = newGroupId;
+  state.members = {};
+  state.contributions = {};
+  state.payouts = {};
+  state.paymentSubmissions = {};
+  state.loans = {};
+  state.loanRepayments = {};
+  state.subscriptionApplications = {};
+  saveState();
 }
 
 // Every install gets its own groupId so a single shared Firebase project
@@ -925,6 +948,17 @@ async function fbRestSave(path, data){
 
 async function fbRestLoad(path){
   const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + scopedPath(path) + '.json';
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('fbRestLoad failed: ' + res.status);
+  return res.json();
+}
+
+// Same as fbRestLoad but against an explicit groupId rather than this
+// device's current state.groupId — used only to check whether a Group ID
+// someone typed in on the login screen actually resolves to something real
+// BEFORE switchGroupContext() commits this device to it.
+async function fbRestLoadForGroup(groupId, path){
+  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/groups/' + groupId + '/' + path + '.json';
   const res = await fetch(url);
   if(!res.ok) throw new Error('fbRestLoad failed: ' + res.status);
   return res.json();
@@ -2000,7 +2034,7 @@ function renderSettings(){
     </div>
     <div class="card">
       <h2>Sync info</h2>
-      <div class="member-sub">Group ID (for support/admin lookups)</div>
+      <div class="member-sub">Group ID — share this with members logging in from their own phone for the first time</div>
       <div class="row" style="align-items:center; gap:8px; margin-top:6px;">
         <input id="sync_group_id" readonly value="${state.groupId||''}" style="flex:1;" onclick="this.select()">
         <button class="btn secondary" id="sync_group_id_copy" style="width:auto; padding:8px 12px;">Copy</button>
@@ -2330,6 +2364,7 @@ document.getElementById('ma_tab_login').addEventListener('click', ()=>setAuthTab
 document.getElementById('ma_login').addEventListener('click', async ()=>{
   const phone = document.getElementById('ma_phone').value.trim();
   const password = document.getElementById('ma_password').value;
+  const enteredGroupId = document.getElementById('ma_group_id').value.trim();
   const errEl = document.getElementById('ma_error');
   errEl.style.display = 'none';
   if(!phone || !password){
@@ -2340,6 +2375,56 @@ document.getElementById('ma_login').addEventListener('click', async ()=>{
   const btn = document.getElementById('ma_login');
   btn.disabled = true; btn.textContent = 'Logging in…';
   try{
+    if(enteredGroupId && enteredGroupId !== state.groupId){
+      // Switching groups wipes this device's local data, so verify the
+      // Group ID actually resolves to this exact phone + password BEFORE
+      // committing to anything — a mistyped ID or wrong password must
+      // leave this device completely untouched, not half-switched to a
+      // group that doesn't recognize the login.
+      if(!FB_CONFIG.dbUrl){
+        errEl.textContent = "This device isn't connected yet — ask your treasurer to set this up.";
+        errEl.style.display = 'block';
+        return;
+      }
+      btn.textContent = 'Checking Group ID…';
+      let remoteMembersThere;
+      try{
+        remoteMembersThere = await fbRestLoadForGroup(enteredGroupId, 'members');
+      }catch(e){
+        errEl.textContent = 'Could not reach the server to check that Group ID — check your connection and try again.';
+        errEl.style.display = 'block';
+        return;
+      }
+      const entry = Object.values(remoteMembersThere || {}).find(m => m.phone === phone);
+      if(!entry){
+        errEl.textContent = 'No account with that phone number was found under that Group ID — double check both with your chairperson.';
+        errEl.style.display = 'block';
+        return;
+      }
+      if(!entry.passwordHash){
+        errEl.textContent = 'This account has no password set yet — ask your chairperson to set one.';
+        errEl.style.display = 'block';
+        return;
+      }
+      const hash = await hashPassword(password);
+      if(hash !== entry.passwordHash){
+        errEl.textContent = 'Incorrect password.';
+        errEl.style.display = 'block';
+        return;
+      }
+      // Verified — safe to commit this device to the new group now.
+      if(state.group){
+        const proceed = confirm("This device is currently linked to a different group. Switching to this Group ID will clear this device's local copy (anything already synced stays safe on the server). Continue?");
+        if(!proceed){
+          errEl.textContent = 'Login cancelled — Group ID left unchanged.';
+          errEl.style.display = 'block';
+          return;
+        }
+      }
+      btn.textContent = 'Connecting to group…';
+      await switchGroupContext(enteredGroupId);
+      btn.textContent = 'Logging in…';
+    }
     const result = await loginMember(phone, password);
     if(result.error){
       errEl.textContent = result.error;
@@ -2392,28 +2477,35 @@ document.getElementById('ma_signup').addEventListener('click', async ()=>{
   const btn = document.getElementById('ma_signup');
   btn.disabled = true; btn.textContent = 'Checking for existing account…';
   try{
-    // Guard against creating a duplicate chairperson account for this phone
-    // — e.g. a double-tap, or a retry after an earlier signup got partway
-    // through (group created, login step failed). Ask Firebase directly
-    // rather than trusting only what's cached locally, since a duplicate
-    // could already be synced from elsewhere or from a previous attempt on
-    // this device.
-    if(FB_CONFIG.dbUrl){
+    // If this device already belongs to a group, check whether that phone
+    // is already a member of THAT group — this is just a helpful nudge for
+    // someone who meant to log back in, not a cross-group lookup: it only
+    // ever checks the group this device is currently scoped to.
+    if(FB_CONFIG.dbUrl && state.groupId && state.group){
       let remoteMembers;
       try{
         remoteMembers = await fbRestLoad('members');
       }catch(e){
-        errEl.textContent = 'Could not reach the server to check for an existing account — check your connection and try again.';
-        errEl.style.display = 'block';
-        return;
+        remoteMembers = null; // offline — fall back to the local cache below
       }
-      const existing = Object.values(remoteMembers || {}).find(m => m.phone === phone);
+      const pool = remoteMembers || state.members;
+      const existing = Object.values(pool || {}).find(m => m.phone === phone);
       if(existing){
-        errEl.textContent = `An account with that phone number already exists (${existing.name}) — try logging in instead. If this isn't you, this phone number is already in use for this group.`;
+        errEl.textContent = `An account with that phone number already exists in this group's records (${existing.name}) — try logging in instead.`;
         errEl.style.display = 'block';
         return;
       }
     }
+
+    // Every submission of this form creates a brand-new, independent group
+    // — never reuse whatever group/members/contributions/payouts already
+    // sit in local storage or in the previous groupId's Firebase branch.
+    // Without this reset, signing up a second time on the same device would
+    // overwrite the old group's data (same groupId) and mix its members in
+    // with the new one's. Flush what's pending first so nothing from a
+    // real previous group is lost, then start this signup on a fresh id.
+    btn.textContent = 'Setting up…';
+    await switchGroupContext(uid('grp'));
 
     btn.textContent = 'Creating group…';
     const created = setupGroup({name: groupName, amount, frequency, startDate, reserveAmount});
