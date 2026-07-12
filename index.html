@@ -1444,7 +1444,11 @@ function render(){
   else if(activeTab === 'contributions') { app.innerHTML = renderContributions(); bindContributions(); refreshPendingSubmissions(); }
   else if(activeTab === 'payouts') { app.innerHTML = renderPayouts(); bindPayouts(); }
   else if(activeTab === 'loans') { app.innerHTML = renderLoans(); bindLoans(); }
-  else if(activeTab === 'settings') { app.innerHTML = renderSettings(); bindSettings(); refreshTierFromRemote().then(changed=>{ if(changed && activeTab==='settings') render(); }); }
+  else if(activeTab === 'settings') {
+    app.innerHTML = renderSettings(); bindSettings();
+    syncGroupRegistry();
+    refreshTierFromRemote().then(changed=>{ if(changed && activeTab==='settings') render(); });
+  }
   else if(activeTab === 'share') { app.innerHTML = renderShare(); bindShare(); }
 
   document.querySelectorAll('nav.tabs button').forEach(b=>{
@@ -1957,6 +1961,14 @@ function renderSettings(){
           <span class="badge ${badgeClass}">${a.status}</span>
         </div>`;
       }).join('') : `<div class="empty">No applications submitted yet.</div>`}
+    </div>
+    <div class="card">
+      <h2>Sync info</h2>
+      <div class="member-sub">Group ID (for support/admin lookups)</div>
+      <div class="row" style="align-items:center; gap:8px; margin-top:6px;">
+        <input id="sync_group_id" readonly value="${state.groupId||''}" style="flex:1;" onclick="this.select()">
+        <button class="btn secondary" id="sync_group_id_copy" style="width:auto; padding:8px 12px;">Copy</button>
+      </div>
     </div>`;
 }
 
@@ -1987,6 +1999,22 @@ function bindSettings(){
       submitSubscriptionApplication({requestedTier, method, transactionId, amount, note}, officer);
       toast("Application submitted — we'll confirm shortly");
       render();
+    };
+  }
+
+  const copyIdBtn = document.getElementById('sync_group_id_copy');
+  if(copyIdBtn){
+    copyIdBtn.onclick = async ()=>{
+      const val = document.getElementById('sync_group_id').value;
+      try{
+        await navigator.clipboard.writeText(val);
+        toast('Copied');
+      }catch(e){
+        // Clipboard API can be blocked in some WebViews — fall back to
+        // select-and-let-the-person-copy-manually instead of failing silently.
+        document.getElementById('sync_group_id').select();
+        toast('Selected — copy manually');
+      }
     };
   }
 }
