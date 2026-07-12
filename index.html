@@ -805,14 +805,18 @@ async function setMemberPassword(memberId, newPassword){
   }
   const passwordHash = await hashPassword(newPassword);
   const m = state.members[memberId];
-  if(m){ m.passwordHash = passwordHash; saveState(); }
+  if(!m) return false;
+  m.passwordHash = passwordHash; saveState();
   try{
     await fbRestSave('members/'+memberId+'/passwordHash', passwordHash);
-    return true;
   }catch(e){
-    toast('Could not reach the server — check your connection.');
-    return false;
+    // Same local-first pattern as setupGroup/addMember: the hash is already
+    // saved locally, so queue the remote write for retry instead of failing
+    // the whole operation — a network hiccup here shouldn't force signup
+    // (or a caller like password reset) to be treated as having failed.
+    queueSync('members/'+memberId+'/passwordHash', passwordHash);
   }
+  return true;
 }
 
 async function changeMemberPassword(memberId, newPassword){
@@ -2386,8 +2390,32 @@ document.getElementById('ma_signup').addEventListener('click', async ()=>{
   }
 
   const btn = document.getElementById('ma_signup');
-  btn.disabled = true; btn.textContent = 'Creating group…';
+  btn.disabled = true; btn.textContent = 'Checking for existing account…';
   try{
+    // Guard against creating a duplicate chairperson account for this phone
+    // — e.g. a double-tap, or a retry after an earlier signup got partway
+    // through (group created, login step failed). Ask Firebase directly
+    // rather than trusting only what's cached locally, since a duplicate
+    // could already be synced from elsewhere or from a previous attempt on
+    // this device.
+    if(FB_CONFIG.dbUrl){
+      let remoteMembers;
+      try{
+        remoteMembers = await fbRestLoad('members');
+      }catch(e){
+        errEl.textContent = 'Could not reach the server to check for an existing account — check your connection and try again.';
+        errEl.style.display = 'block';
+        return;
+      }
+      const existing = Object.values(remoteMembers || {}).find(m => m.phone === phone);
+      if(existing){
+        errEl.textContent = `An account with that phone number already exists (${existing.name}) — try logging in instead. If this isn't you, this phone number is already in use for this group.`;
+        errEl.style.display = 'block';
+        return;
+      }
+    }
+
+    btn.textContent = 'Creating group…';
     const created = setupGroup({name: groupName, amount, frequency, startDate, reserveAmount});
     if(!created){
       // setupGroup() already toasted the reason, if any.
@@ -2401,12 +2429,24 @@ document.getElementById('ma_signup').addEventListener('click', async ()=>{
     }
     const passwordSet = await setMemberPassword(memberId, password);
     if(!passwordSet){
-      errEl.textContent = 'Group created, but your login could not be saved — check your connection and log in once it is back, or try signing up again.';
+      errEl.textContent = 'Could not create your chairperson account — please try again.';
       errEl.style.display = 'block';
       return;
     }
     const result = await loginMember(phone, password);
     if(result.error){
+      // We just created this exact member + password locally in this same
+      // session, so a login round-trip failing here is almost always the
+      // same connectivity hiccup — not a real credential problem. Sign in
+      // locally instead of dead-ending a signup that already succeeded;
+      // the group/member/password sync will finish in the background once
+      // there's a connection.
+      if(state.members[memberId] && state.members[memberId].passwordHash){
+        setMemberSession(memberId);
+        toast('Group created — signed in offline; will finish syncing once you have a connection.');
+        showApp();
+        return;
+      }
       errEl.textContent = result.error;
       errEl.style.display = 'block';
       return;
