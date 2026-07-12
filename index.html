@@ -531,11 +531,14 @@
 const STORAGE_KEY = 'chilimba_state_v1';
 const PENDING_KEY = 'chilimba_pending_sync';
 
-// Fill this in when ready to go live. Leave blank to run fully offline/local.
-// No Cloud Functions or Firebase Auth needed — passwords are hashed
-// client-side (see hashPassword()) and compared against the hash stored
-// on the member record. Security rides on the dbUrl being unguessable,
-// same posture as the other Nexlite apps before they add per-user rules.
+// One shared Firebase project across every Chilimba group now (was one
+// project per group). Each group's data lives under groups/{groupId}/... —
+// see ensureGroupId() and scopedPath(). Security still rides on groupId
+// being unguessable inside each group's own copy of this file, same
+// open-trust posture as before, just scoped by path instead of by project.
+// No Cloud Functions or Firebase Auth needed for member-facing features —
+// passwords are hashed client-side (see hashPassword()) and compared
+// against the hash stored on the member record.
 const FB_CONFIG = {
   dbUrl: 'https://chilimba-master-default-rtdb.firebaseio.com'
 };
@@ -550,12 +553,14 @@ const TIER_LABELS = { free:'Free', starter:'Starter', growth:'Growth', pro:'Pro'
 // K/month — matches the landing page pricing table.
 const TIER_PRICES = { free:0, starter:90, growth:150, pro:300 };
 // Fill in your WhatsApp Business number (with country code, no + or spaces,
-// e.g. '260971234567') so subscription applications ping you directly —
-// there's no central operator admin panel for this app the way MDM/School
-// Pro have, since each group gets its own Firebase project.
+// e.g. '260971234567') so subscription applications ping you directly for
+// same-day follow-up. The operator admin panel (chilimba-admin.html) still
+// picks up every application on its own next refresh either way — this is
+// just for immediate notification, not the only way you'll see it.
 const SUPPORT_WHATSAPP = '';
 
 let state = loadState();
+ensureGroupId();
 if(!state.paymentSubmissions) state.paymentSubmissions = {};
 if(!state.loans) state.loans = {};
 if(!state.loanRepayments) state.loanRepayments = {};
@@ -584,10 +589,31 @@ function loadState(){
     }
   }catch(e){ console.error('State load failed', e); }
   return {
-    group:null, members:{}, contributions:{}, payouts:{}, paymentSubmissions:{},
+    group:null, groupId:null, members:{}, contributions:{}, payouts:{}, paymentSubmissions:{},
     loans:{}, loanRepayments:{}, subscriptionApplications:{},
     settings:{ tier:'free', theme:'light' }
   };
+}
+
+// Every install gets its own groupId so a single shared Firebase project
+// can host every group's data side by side, scoped under groups/{groupId}.
+// This runs on every load (cheap no-op once assigned) so existing
+// installs that predate multi-tenancy — which had no groupId — get one
+// assigned automatically instead of needing a manual migration step.
+function ensureGroupId(){
+  if(!state.groupId){
+    state.groupId = uid('grp');
+    saveState();
+  }
+  // Groups created before this field existed never got an id written
+  // onto the group object itself — the "group" validation rule requires
+  // one, so without this every full-object group write (reserve changes,
+  // rotation/cycle advances) would keep failing and retrying forever.
+  if(state.group && !state.group.id){
+    state.group.id = state.groupId;
+    saveState();
+    queueSync('group', state.group);
+  }
 }
 
 function saveState(){
@@ -877,18 +903,60 @@ async function flushPendingSync(){
   localStorage.setItem(PENDING_KEY, JSON.stringify(remaining));
 }
 
+// Prefixes every group-facing path with groups/{groupId}/ so this group's
+// data lives in its own branch of the shared project. groupRegistry (see
+// syncGroupRegistry below) deliberately does NOT go through this — it's
+// the one thing that lives outside the group's branch, since the operator
+// panel needs to list all groupIds without already knowing them.
+function scopedPath(path){
+  return 'groups/' + state.groupId + '/' + path;
+}
+
 async function fbRestSave(path, data){
-  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + path + '.json';
+  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + scopedPath(path) + '.json';
   const res = await fetch(url, { method:'PUT', body: JSON.stringify(data) });
   if(!res.ok) throw new Error('fbRestSave failed: ' + res.status);
   return res.json();
 }
 
 async function fbRestLoad(path){
-  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + path + '.json';
+  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + scopedPath(path) + '.json';
   const res = await fetch(url);
   if(!res.ok) throw new Error('fbRestLoad failed: ' + res.status);
   return res.json();
+}
+
+// Unscoped write — only for groupRegistry, which lives outside any
+// group's own branch. Never use this for member/group/financial data.
+async function fbRestSaveRaw(path, data){
+  const url = FB_CONFIG.dbUrl.replace(/\/$/,'') + '/' + path + '.json';
+  const res = await fetch(url, { method:'PUT', body: JSON.stringify(data) });
+  if(!res.ok) throw new Error('fbRestSaveRaw failed: ' + res.status);
+  return res.json();
+}
+
+// Best-effort summary snapshot the operator admin panel reads to list
+// every group without walking each group's full data tree. Call this
+// after anything that changes a group's name, tier, size, or plan terms.
+// Silently no-ops offline — the panel just shows a slightly stale
+// snapshot until a device with connectivity calls this again.
+function syncGroupRegistry(){
+  if(!FB_CONFIG.dbUrl || !state.groupId || !state.group) return;
+  const grp = state.group;
+  const pendingApplications = Object.values(state.subscriptionApplications||{})
+    .filter(a=>a.status==='pending').length;
+  const entry = {
+    groupId: state.groupId,
+    name: grp.name || '(unnamed)',
+    tier: (state.settings && state.settings.tier) || 'free',
+    memberCount: totalMemberCount(),
+    contribution: grp.contribution,
+    frequency: grp.frequency,
+    pendingApplications,
+    createdAt: grp.createdAt,
+    updatedAt: Date.now()
+  };
+  fbRestSaveRaw('groupRegistry/' + state.groupId, entry).catch(()=>{});
 }
 
 /* ---------- member sync ---------- */
@@ -922,6 +990,7 @@ async function refreshTierFromRemote(){
     if(remoteSettings && remoteSettings.tier && remoteSettings.tier !== state.settings.tier){
       state.settings.tier = remoteSettings.tier;
       saveState();
+      syncGroupRegistry();
       return true;
     }
   }catch(e){ /* offline — keep whatever tier is cached locally */ }
@@ -933,8 +1002,9 @@ function mySubscriptionApplications(){
 }
 
 // Records the request locally/remotely for your own records, then opens
-// WhatsApp with the details prefilled so you're notified right away —
-// there's no polling admin panel watching this Firebase project for you.
+// WhatsApp with the details prefilled so you're notified right away. The
+// operator admin panel (chilimba-admin.html) also lists every pending
+// application across all groups — WhatsApp is just for the instant ping.
 function submitSubscriptionApplication({requestedTier, method, transactionId, amount, note}, submittedBy){
   const id = uid('sub');
   const record = {
@@ -947,6 +1017,7 @@ function submitSubscriptionApplication({requestedTier, method, transactionId, am
   state.subscriptionApplications[id] = record;
   saveState();
   queueSync('subscriptionApplications/'+id, record);
+  syncGroupRegistry();
 
   if(SUPPORT_WHATSAPP){
     const grp = state.group;
@@ -960,12 +1031,13 @@ function submitSubscriptionApplication({requestedTier, method, transactionId, am
 // There is only ever one savings circle per account — this sets it up once.
 function setupGroup({name, amount, frequency, startDate, reserveAmount}){
   state.group = {
-    name, contribution:Number(amount), frequency, startDate,
+    id: state.groupId, name, contribution:Number(amount), frequency, startDate,
     reserveAmount: Number(reserveAmount) || 0,
     rotationOrder: [], currentCycle: 1, rotationNumber: 1, createdAt: Date.now()
   };
   saveState();
   queueSync('group', state.group);
+  syncGroupRegistry();
   return true;
 }
 
@@ -983,6 +1055,7 @@ function addMember({name, phone, role}){
   };
   saveState();
   queueSync('members/'+id, state.members[id]);
+  syncGroupRegistry();
   return id;
 }
 
@@ -1020,6 +1093,7 @@ function removeMember(memberId){
   removeFromRotation(memberId);
   saveState();
   queueSync('members/'+memberId, m);
+  syncGroupRegistry();
 }
 
 /* ---------------------- member payment submissions ---------------------- */
@@ -1154,7 +1228,30 @@ function availableBalance(){
   return Math.max(0, ledger.balance - (grp.reserveAmount||0));
 }
 
+// Self-healing: if every member currently in the rotation already has a
+// payout recorded for the current rotationNumber, that round is actually
+// complete even if the auto-advance in markPayout() missed it (e.g. the
+// rotation list changed between payouts). Roll forward here instead of
+// leaving rotationNumber stuck, so the UI and the underlying state agree.
+function advanceRotationIfComplete(){
+  const grp = state.group;
+  if(!grp.rotationOrder || !grp.rotationOrder.length) return;
+  const rotationNumber = grp.rotationNumber || 1;
+  const paidOutThisRotation = new Set(
+    Object.values(state.payouts)
+      .filter(p=>(p.rotationNumber||1)===rotationNumber)
+      .map(p=>p.memberId)
+  );
+  const complete = grp.rotationOrder.every(mid => paidOutThisRotation.has(mid));
+  if(complete){
+    grp.rotationNumber = rotationNumber + 1;
+    saveState();
+    queueSync('group', grp);
+  }
+}
+
 function suggestNextPayout(){
+  advanceRotationIfComplete();
   const grp = state.group;
   const paidOut = new Set(
     Object.values(state.payouts)
@@ -1164,7 +1261,7 @@ function suggestNextPayout(){
   for(const memberId of grp.rotationOrder){
     if(!paidOut.has(memberId)) return state.members[memberId];
   }
-  return null; // everyone has received a payout this rotation
+  return null; // rotation is empty — no members to pay out to
 }
 
 // Returns { ok:true, newRotation:bool } on success, or { error } if the
@@ -1689,7 +1786,7 @@ function renderPayouts(){
         ${canManageFinance() ? `
         <div class="field" style="margin-top:10px;"><label>Payout amount (max ${fmtK(available)})</label><input id="po_amount" type="number" max="${available}" value="${suggestedAmount}"></div>
         <button class="btn gold full" id="po_confirm">Confirm payout to ${next.name}</button>` : ''}
-      ` : `<div class="empty">Add members to the rotation to start scheduling payouts.</div>`}
+      ` : `<div class="empty">${grp.rotationOrder && grp.rotationOrder.length ? 'Everyone in the rotation has been paid out this round — the next round will start as soon as this loads.' : 'Add members to the rotation to start scheduling payouts.'}</div>`}
     </div>
     <div class="card">
       <h2>Payout history</h2>
