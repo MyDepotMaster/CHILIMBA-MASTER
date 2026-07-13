@@ -441,7 +441,7 @@
   <nav class="tabs" id="tabsNav" style="display:none;">
     <button data-tab="overview" class="active"><span class="ic">&#128202;</span>Overview</button>
     <button data-tab="members"><span class="ic">&#128101;</span>Members</button>
-    <button data-tab="contributions"><span class="ic">&#128176;</span>Contribute</button>
+    <button data-tab="contributions"><span class="ic">&#128176;</span>Contribute<span id="contribBadge" class="badge due" style="display:none; margin-left:4px; padding:1px 6px; font-size:10px;">0</span></button>
     <button data-tab="payouts"><span class="ic">&#127942;</span>Payout</button>
     <button data-tab="loans"><span class="ic">&#127974;</span>Loans</button>
     <button data-tab="settings"><span class="ic">&#9881;</span>Settings</button>
@@ -566,6 +566,7 @@ if(!state.paymentSubmissions) state.paymentSubmissions = {};
 if(!state.loans) state.loans = {};
 if(!state.loanRepayments) state.loanRepayments = {};
 if(!state.subscriptionApplications) state.subscriptionApplications = {};
+if(!state.activityLog) state.activityLog = {};
 let activeTab = 'overview';
 
 function loadState(){
@@ -591,7 +592,7 @@ function loadState(){
   }catch(e){ console.error('State load failed', e); }
   return {
     group:null, groupId:null, members:{}, contributions:{}, payouts:{}, paymentSubmissions:{},
-    loans:{}, loanRepayments:{}, subscriptionApplications:{},
+    loans:{}, loanRepayments:{}, subscriptionApplications:{}, activityLog:{},
     settings:{ tier:'free', theme:'light' }
   };
 }
@@ -615,6 +616,7 @@ async function switchGroupContext(newGroupId){
   state.loans = {};
   state.loanRepayments = {};
   state.subscriptionApplications = {};
+  state.activityLog = {};
   saveState();
 }
 
@@ -711,6 +713,68 @@ const ROLE_LABELS = {
   vice_chair: 'Vice Chair'
 };
 function roleLabel(role){ return ROLE_LABELS[role] || 'Member'; }
+
+/* ---------------------- activity log / audit trail ---------------------- */
+// Append-only record of who did what. Every write is open-trust with no
+// per-user auth backing it (same as the rest of this app), so this can't
+// cryptographically prove identity — but it does capture "someone logged
+// in as X did Y at time T", which is exactly the record a group falls
+// back on when there's a dispute over a payout, role change, or approval.
+// Entries are never edited or deleted once written.
+function currentActor(){
+  const officer = currentOfficer();
+  if(officer) return { id: officer.id, name: officer.name, role: officer.role };
+  const session = getMemberSession();
+  if(session){
+    const m = state.members[session.memberId];
+    if(m) return { id: m.id, name: m.name, role: m.role || 'member' };
+  }
+  // Nobody logged in on this device — open-trust action, same as the rest
+  // of the app pre-login. Still worth logging so the trail isn't silent.
+  return { id: null, name: 'Unidentified (not logged in)', role: null };
+}
+
+function logActivity(action, details){
+  const actor = currentActor();
+  const id = uid('log');
+  const record = {
+    id, ts: Date.now(),
+    actorId: actor.id, actorName: actor.name, actorRole: actor.role,
+    action, details: details || ''
+  };
+  state.activityLog[id] = record;
+  saveState();
+  queueSync('activityLog/'+id, record);
+  return record;
+}
+
+function recentActivity(limit){
+  return Object.values(state.activityLog)
+    .sort((a,b)=> b.ts - a.ts)
+    .slice(0, limit || 40);
+}
+
+// Activity log is push-only from each device, same as everything else in
+// this app — so a device only sees entries written by OTHER devices once
+// it pulls them down. Called when opening Settings. Merge is additive and
+// safe: entries are immutable once written, keyed by their own log id, so
+// there's never a conflict to resolve, just new ids to adopt.
+async function refreshActivityLogFromRemote(){
+  if(!FB_CONFIG.dbUrl) return false;
+  try{
+    const remote = await fbRestLoad('activityLog');
+    if(!remote) return false;
+    let changed = false;
+    Object.keys(remote).forEach(id=>{
+      if(!state.activityLog[id]){
+        state.activityLog[id] = remote[id];
+        changed = true;
+      }
+    });
+    if(changed) saveState();
+    return changed;
+  }catch(e){ return false; } // offline or unreachable — keep what we have locally
+}
 
 function currentOfficer(){
   const session = getMemberSession();
@@ -1013,7 +1077,7 @@ function currentLimits(){
   return TIER_LIMITS[state.settings.tier] || TIER_LIMITS.free;
 }
 function allMembers(){
-  return Object.values(state.members).filter(m => m.status !== 'exited');
+  return Object.values(state.members).filter(m => m.status !== 'exited' && m.status !== 'merged');
 }
 function totalMemberCount(){
   return allMembers().length;
@@ -1106,6 +1170,7 @@ function setupGroup({name, amount, frequency, startDate, reserveAmount}){
   saveState();
   queueSync('group', state.group);
   syncGroupRegistry();
+  logActivity('group_created', `Circle "${name}" set up — K${amount} ${frequency}`);
   return true;
 }
 
@@ -1114,6 +1179,17 @@ function addMember({name, phone, role}){
   if(totalMemberCount() >= limits.totalMembers){
     toast('Member limit reached for your plan. Upgrade for more.');
     return null;
+  }
+  // Same guard as signup, applied here too: a phone number can silently be
+  // added twice (double-tap, re-adding someone already on the roster), and
+  // each duplicate gets its own rotation slot and its own "owes" tracking —
+  // quietly throwing off cycle totals and payout order.
+  if(phone){
+    const dup = Object.values(state.members).find(m => m.status !== 'exited' && m.phone === phone);
+    if(dup){
+      toast(`${dup.name} is already in this group with that phone number.`);
+      return null;
+    }
   }
   const id = uid('mem');
   state.members[id] = {
@@ -1124,6 +1200,7 @@ function addMember({name, phone, role}){
   saveState();
   queueSync('members/'+id, state.members[id]);
   syncGroupRegistry();
+  logActivity('member_added', `${name} added as ${roleLabel(role||'member')}`);
   return id;
 }
 
@@ -1149,9 +1226,13 @@ function removeFromRotation(memberId){
 function setMemberRole(memberId, role){
   const m = state.members[memberId];
   if(!m) return;
+  const oldRole = m.role;
   m.role = role;
   saveState();
   queueSync('members/'+memberId, m);
+  if(oldRole !== role){
+    logActivity('role_changed', `${m.name}: ${roleLabel(oldRole)} → ${roleLabel(role)}`);
+  }
 }
 
 function removeMember(memberId){
@@ -1162,6 +1243,74 @@ function removeMember(memberId){
   saveState();
   queueSync('members/'+memberId, m);
   syncGroupRegistry();
+  logActivity('member_removed', `${m.name} removed from group`);
+}
+
+// Folds an accidental duplicate (fromId) into the correct member record
+// (intoId): every contribution, submission, payout, and loan that landed
+// on the duplicate gets reassigned to the real member instead of being
+// stranded there, and the duplicate is retired. This replaces "Remove
+// each extra one by one" — which left the duplicate's history orphaned
+// under an exited record — with a single action that keeps the history.
+function mergeMembers(fromId, intoId){
+  if(fromId === intoId) return { error: 'Choose a different member to merge into.' };
+  const from = state.members[fromId];
+  const into = state.members[intoId];
+  if(!from || !into) return { error: 'Member not found.' };
+
+  // Contributions key on (member, cycle), so if both the duplicate and the
+  // real member have a contribution for the same cycle, combine what was
+  // paid rather than letting one side overwrite the other.
+  Object.values(state.contributions).forEach(c=>{
+    if(c.memberId !== fromId) return;
+    const existing = Object.values(state.contributions).find(
+      x => x.memberId===intoId && x.cycle===c.cycle
+    );
+    if(existing){
+      existing.amountPaid = (existing.amountPaid||0) + (c.amountPaid||0);
+      existing.late = existing.amountPaid < existing.amountDue;
+      state.contributions[existing.id] = existing;
+      queueSync('contributions/'+existing.id, existing);
+      delete state.contributions[c.id];
+      queueSync('contributions/'+c.id, null);
+    } else {
+      c.memberId = intoId;
+      queueSync('contributions/'+c.id, c);
+    }
+  });
+
+  // Payouts, pending submissions, loans, and loan repayments have no
+  // natural collision key — just hand each one over to the real member.
+  ['payouts','paymentSubmissions','loans','loanRepayments'].forEach(bucket=>{
+    Object.values(state[bucket]).forEach(rec=>{
+      if(rec.memberId === fromId){
+        rec.memberId = intoId;
+        queueSync(bucket+'/'+rec.id, rec);
+      }
+    });
+  });
+
+  // Rotation: if the duplicate held a slot the real member didn't already
+  // have, hand that slot over in the same position so payout order isn't
+  // disturbed; otherwise just drop the duplicate's slot.
+  const grp = state.group;
+  const fromIdx = grp.rotationOrder.indexOf(fromId);
+  if(fromIdx !== -1){
+    if(grp.rotationOrder.includes(intoId)){
+      grp.rotationOrder.splice(fromIdx, 1);
+    } else {
+      grp.rotationOrder[fromIdx] = intoId;
+    }
+    queueSync('group', grp);
+  }
+
+  from.status = 'merged';
+  from.mergedInto = intoId;
+  saveState();
+  queueSync('members/'+fromId, from);
+  syncGroupRegistry();
+  logActivity('members_merged', `${from.name} merged into ${into.name} (history combined)`);
+  return { ok:true };
 }
 
 /* ---------------------- member payment submissions ---------------------- */
@@ -1182,6 +1331,8 @@ function submitPaymentClaim(memberId, {amount, method, note}){
   memberSync('paymentSubmissions/'+id, record).catch(()=>{
     toast('Saved on this device — will need to retry once you have a connection.');
   });
+  const submitter = state.members[memberId];
+  logActivity('payment_submitted', `${submitter ? submitter.name : 'A member'} claimed ${fmtK(record.amount)} paid (cycle ${record.cycle}, ${method})`);
   return id;
 }
 
@@ -1193,6 +1344,8 @@ function approvePaymentSubmission(subId){
   sub.reviewedAt = new Date().toISOString().slice(0,10);
   saveState();
   queueSync('paymentSubmissions/'+subId, sub);
+  const member = state.members[sub.memberId];
+  logActivity('payment_approved', `${fmtK(sub.amount)} from ${member ? member.name : 'member'} approved (cycle ${sub.cycle})`);
 }
 
 function rejectPaymentSubmission(subId, reason){
@@ -1203,6 +1356,8 @@ function rejectPaymentSubmission(subId, reason){
   sub.reviewedAt = new Date().toISOString().slice(0,10);
   saveState();
   queueSync('paymentSubmissions/'+subId, sub);
+  const member = state.members[sub.memberId];
+  logActivity('payment_rejected', `${fmtK(sub.amount)} claim from ${member ? member.name : 'member'} rejected${reason ? ' — ' + reason : ''}`);
 }
 
 function memberSubmissions(memberId){
@@ -1219,17 +1374,52 @@ function pendingSubmissions(){
 
 // Sync here is push-only (no live listeners), so the treasurer's device
 // won't see a member's submission until it explicitly pulls. Called when
-// opening the Contributions tab, and via the manual refresh button.
+// opening the Contributions tab, via the manual refresh button, and on a
+// background poll (see maybePollPendingSubmissions) so a treasurer who
+// isn't sitting on that tab still finds out a payment came in.
 async function refreshPendingSubmissions(){
   if(!FB_CONFIG.dbUrl) return;
   try{
+    const beforeIds = new Set(pendingSubmissions().map(s=>s.id));
     const remote = await fbRestLoad('paymentSubmissions');
     if(remote){
       state.paymentSubmissions = Object.assign({}, state.paymentSubmissions, remote);
       saveState();
+      const newOnes = pendingSubmissions().filter(s=>!beforeIds.has(s.id));
+      if(newOnes.length && activeTab !== 'contributions'){
+        toast(newOnes.length === 1 ? 'New payment submitted for review' : `${newOnes.length} new payments submitted for review`);
+      }
       if(activeTab === 'contributions') render();
+      else updateContribBadge();
     }
   }catch(e){ /* offline — keep showing whatever's cached locally */ }
+}
+
+// Reflects the pending-submissions count on the Contribute nav tab so a
+// treasurer can see a payment is waiting without having to tap in and hit
+// Refresh — the badge updates itself from the background poll below.
+function updateContribBadge(){
+  const badge = document.getElementById('contribBadge');
+  if(!badge) return;
+  const count = canManageFinance() ? pendingSubmissions().length : 0;
+  badge.textContent = count > 9 ? '9+' : String(count);
+  badge.style.display = count > 0 ? 'inline-block' : 'none';
+}
+
+// Background poll so pending payments surface without a manual Refresh
+// tap. Only runs for treasurer/vice treasurer (the people who act on
+// these) and only while a group + remote sync are actually set up — kept
+// modest in frequency out of respect for the weak 4G this app runs on.
+const PENDING_POLL_MS = 45000;
+let pendingPollTimer = null;
+function maybePollPendingSubmissions(){
+  const shouldPoll = !!(FB_CONFIG.dbUrl && state.group && canManageFinance());
+  if(shouldPoll && !pendingPollTimer){
+    pendingPollTimer = setInterval(refreshPendingSubmissions, PENDING_POLL_MS);
+  } else if(!shouldPoll && pendingPollTimer){
+    clearInterval(pendingPollTimer);
+    pendingPollTimer = null;
+  }
 }
 
 /* ---------------------- contributions ---------------------- */
@@ -1364,6 +1554,8 @@ function markPayout(memberId, cycle, amount){
   saveState();
   queueSync('payouts/'+id, record);
   queueSync('group', grp);
+  const recipient = state.members[memberId];
+  logActivity('payout_confirmed', `${fmtK(payAmount)} paid out to ${recipient ? recipient.name : 'member'} (cycle ${cycle})`);
   return { ok:true, newRotation };
 }
 
@@ -1419,6 +1611,8 @@ function issueLoan({memberId, principal, interestRate, lateFeeRate, dueDate}){
   state.loans[id] = record;
   saveState();
   queueSync('loans/'+id, record);
+  const borrower = state.members[memberId];
+  logActivity('loan_issued', `${fmtK(amount)} loaned to ${borrower ? borrower.name : 'member'}${dueDate ? ' (due ' + dueDate + ')' : ''}`);
   return { ok:true };
 }
 
@@ -1435,6 +1629,8 @@ function recordLoanRepayment(loanId, amount){
   saveState();
   queueSync('loanRepayments/'+id, record);
   queueSync('loans/'+loanId, loan);
+  const borrower = state.members[loan.memberId];
+  logActivity('loan_repayment', `${fmtK(amt)} repaid on ${borrower ? borrower.name + "'s" : "a"} loan${loan.status==='repaid' ? ' — now fully repaid' : ''}`);
   return { ok:true };
 }
 
@@ -1504,6 +1700,7 @@ function render(){
   if(!state.group){
     app.innerHTML = renderNoGroup();
     bindNoGroup();
+    maybePollPendingSubmissions();
     return;
   }
 
@@ -1515,8 +1712,8 @@ function render(){
   else if(activeTab === 'settings') {
     app.innerHTML = renderSettings(); bindSettings();
     syncGroupRegistry();
-    Promise.all([refreshTierFromRemote(), refreshApplicationsFromRemote()]).then(([tierChanged, appsChanged])=>{
-      if((tierChanged || appsChanged) && activeTab==='settings') render();
+    Promise.all([refreshTierFromRemote(), refreshApplicationsFromRemote(), refreshActivityLogFromRemote()]).then(([tierChanged, appsChanged, logChanged])=>{
+      if((tierChanged || appsChanged || logChanged) && activeTab==='settings') render();
     });
   }
   else if(activeTab === 'share') { app.innerHTML = renderShare(); bindShare(); }
@@ -1524,6 +1721,8 @@ function render(){
   document.querySelectorAll('nav.tabs button').forEach(b=>{
     b.classList.toggle('active', b.dataset.tab === activeTab);
   });
+  updateContribBadge();
+  maybePollPendingSubmissions();
 }
 
 function renderNoGroup(){
@@ -1672,6 +1871,12 @@ function renderMembers(){
               ? `<button class="btn secondary" data-remove-rotation="${m.id}" style="padding:6px 10px;font-size:12px;">Remove from rotation</button>`
               : `<button class="btn secondary" data-add-rotation="${m.id}" style="padding:6px 10px;font-size:12px;">Add to rotation</button>`}
             <button class="btn secondary" data-reset="${m.id}" style="padding:6px 10px;font-size:12px;">Reset password</button>
+            ${members.length > 1 ? `
+            <select data-merge-target="${m.id}" style="font-size:12px;padding:4px;">
+              <option value="">Merge into…</option>
+              ${members.filter(o=>o.id!==m.id).map(o=>`<option value="${o.id}">${o.name}${o.phone?' ('+o.phone+')':''}</option>`).join('')}
+            </select>
+            <button class="btn secondary" data-merge="${m.id}" style="padding:6px 10px;font-size:12px;">Merge</button>` : ''}
             <button class="btn danger" data-remove="${m.id}" style="padding:6px 10px;font-size:12px;">Remove</button>` : ''}
           </div>
         </div>`;
@@ -1726,6 +1931,21 @@ function bindMembers(){
       }
     };
   });
+  document.querySelectorAll('[data-merge]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const fromId = btn.dataset.merge;
+      const sel = document.querySelector(`[data-merge-target="${fromId}"]`);
+      const intoId = sel ? sel.value : '';
+      if(!intoId){ toast('Pick who to merge into first'); return; }
+      const from = state.members[fromId];
+      const into = state.members[intoId];
+      if(!confirm(`Merge ${from.name} into ${into.name}? All of ${from.name}'s contributions, payouts, and loans move to ${into.name}, and ${from.name} is removed from the roster. This can't be undone.`)) return;
+      const result = mergeMembers(fromId, intoId);
+      if(result.error){ toast(result.error); return; }
+      toast(`Merged into ${into.name}`);
+      render();
+    };
+  });
   document.querySelectorAll('[data-remove]').forEach(btn=>{
     btn.onclick = ()=>{
       if(confirm('Remove this member from the group entirely? This also takes them out of the rotation.')){
@@ -1764,7 +1984,8 @@ function renderContributions(){
           <div class="row" style="flex:none; gap:6px;">
             ${canManageFinance() ? `
             <button class="btn" data-approve="${s.id}" style="padding:6px 10px;font-size:12px;">Approve</button>
-            <button class="btn danger" data-reject="${s.id}" style="padding:6px 10px;font-size:12px;">Reject</button>` : ''}
+            <button class="btn danger" data-reject="${s.id}" style="padding:6px 10px;font-size:12px;">Reject</button>` : `
+            <span class="member-sub" style="text-align:right;">Only the Treasurer or<br>Vice Treasurer can review this</span>`}
           </div>
         </div>`;
       }).join('')}
@@ -2032,6 +2253,22 @@ function renderSettings(){
         </div>`;
       }).join('') : `<div class="empty">No applications submitted yet.</div>`}
     </div>
+    ${officer ? `
+    <div class="card">
+      <h2>Activity log</h2>
+      <div class="member-sub" style="margin-bottom:8px;">Who did what, and when — a record for the group, not just the treasurer.</div>
+      ${recentActivity(40).length ? recentActivity(40).map(a=>`
+        <div class="member-line">
+          <div>
+            <div class="member-name">${escapeHtml(activityLabel(a.action))}</div>
+            <div class="member-sub">${escapeHtml(a.details||'')}</div>
+          </div>
+          <div style="text-align:right; flex-shrink:0; margin-left:10px;">
+            <div class="member-sub">${new Date(a.ts).toLocaleDateString()} ${new Date(a.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+            <div class="member-sub">${escapeHtml(a.actorName)}${a.actorRole ? ' · ' + roleLabel(a.actorRole) : ''}</div>
+          </div>
+        </div>`).join('') : `<div class="empty">No activity recorded yet.</div>`}
+    </div>` : ''}
     <div class="card">
       <h2>Sync info</h2>
       <div class="member-sub">Group ID — share this with members logging in from their own phone for the first time</div>
@@ -2041,6 +2278,25 @@ function renderSettings(){
       </div>
     </div>`;
 }
+
+// Human-friendly label for each logActivity() action code. Falls back to
+// the raw code (underscores swapped for spaces) so a future action added
+// without updating this map still shows something readable rather than
+// breaking the log display.
+const ACTIVITY_LABELS = {
+  group_created: 'Circle set up',
+  member_added: 'Member added',
+  member_removed: 'Member removed',
+  role_changed: 'Role changed',
+  members_merged: 'Members merged',
+  payment_submitted: 'Payment claimed',
+  payment_approved: 'Payment approved',
+  payment_rejected: 'Payment rejected',
+  payout_confirmed: 'Payout confirmed',
+  loan_issued: 'Loan issued',
+  loan_repayment: 'Loan repayment'
+};
+function activityLabel(action){ return ACTIVITY_LABELS[action] || action.replace(/_/g,' '); }
 
 function bindSettings(){
   const needsLoginBtn = document.getElementById('set_needs_login');
