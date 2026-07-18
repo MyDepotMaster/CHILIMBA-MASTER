@@ -603,6 +603,7 @@ if(!state.fundTx) state.fundTx = {};
 if(!state.bids) state.bids = {};
 if(!state.subscriptionApplications) state.subscriptionApplications = {};
 if(!state.activityLog) state.activityLog = {};
+if(!state.reminders) state.reminders = {};
 let activeTab = 'overview';
 
 function loadState(){
@@ -628,7 +629,7 @@ function loadState(){
   }catch(e){ console.error('State load failed', e); }
   return {
     group:null, groupId:null, members:{}, contributions:{}, payouts:{}, paymentSubmissions:{},
-    loans:{}, loanRepayments:{}, fines:{}, fundTx:{}, bids:{}, subscriptionApplications:{}, activityLog:{},
+    loans:{}, loanRepayments:{}, fines:{}, fundTx:{}, bids:{}, subscriptionApplications:{}, activityLog:{}, reminders:{},
     settings:{ tier:'free', theme:'light' }
   };
 }
@@ -656,6 +657,7 @@ async function switchGroupContext(newGroupId){
   state.bids = {};
   state.subscriptionApplications = {};
   state.activityLog = {};
+  state.reminders = {};
   saveState();
 }
 
@@ -1689,7 +1691,20 @@ async function refreshPendingSubmissions(){
     const beforeIds = new Set(pendingSubmissions().map(s=>s.id));
     const remote = await fbRestLoad('paymentSubmissions');
     if(remote){
-      state.paymentSubmissions = Object.assign({}, state.paymentSubmissions, remote);
+      // Local-wins merge for anything this device has already decided on.
+      // approvePaymentSubmission()/rejectPaymentSubmission() update status
+      // locally and queue an async push to Firebase — if this pull lands
+      // before that push finishes, the server still shows 'pending' and a
+      // plain merge would stomp our just-made decision back to pending.
+      // Only let remote override a local record when remote itself already
+      // reflects a real decision (i.e. it's not just catching up).
+      const merged = Object.assign({}, state.paymentSubmissions);
+      Object.keys(remote).forEach(id=>{
+        const local = merged[id];
+        if(local && local.status !== 'pending' && remote[id].status === 'pending') return;
+        merged[id] = remote[id];
+      });
+      state.paymentSubmissions = merged;
       saveState();
       const newOnes = pendingSubmissions().filter(s=>!beforeIds.has(s.id));
       if(newOnes.length && activeTab !== 'contributions'){
@@ -1827,6 +1842,30 @@ function currentCycleDueInfo(){
   };
 }
 
+// Tracks the last time each member was nudged about the current cycle, so
+// the "reminders due" panel can show who's already been reached instead of
+// the treasurer having to remember (or re-remind everyone every time they
+// open the tab). Keyed by memberId+cycle rather than a generated id since
+// only the most recent reminder for a given cycle is worth keeping.
+function recordReminderSent(memberId, cycle, channel){
+  const id = memberId + '_' + cycle;
+  const record = { id, memberId, cycle, channel, sentAt: new Date().toISOString(), sentBy: currentActor().name };
+  state.reminders[id] = record;
+  saveState();
+  queueSync('reminders/'+id, record);
+  logActivity('reminder_sent', `${channel} reminder sent to ${(state.members[memberId]||{}).name || 'a member'} (cycle ${cycle})`);
+}
+function lastReminder(memberId, cycle){
+  return state.reminders[memberId+'_'+cycle] || null;
+}
+function daysAgoLabel(isoString){
+  if(!isoString) return null;
+  const days = Math.floor((Date.now() - new Date(isoString).getTime()) / 86400000);
+  if(days <= 0) return 'today';
+  if(days === 1) return 'yesterday';
+  return days + ' days ago';
+}
+
 // Builds a personalized WhatsApp nudge for one member who hasn't paid yet.
 function generateMemberReminderText(member){
   const grp = state.group;
@@ -1854,6 +1893,7 @@ function openWhatsAppReminder(member){
   const phone = waPhone(member.phone);
   if(!phone){ toast('This member has no phone number on file.'); return; }
   window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank');
+  if(state.group) recordReminderSent(member.id, state.group.currentCycle, 'WhatsApp');
 }
 
 // Broadcast version for pasting straight into the group's WhatsApp thread
@@ -1874,6 +1914,17 @@ function generateWhatsAppReminder(){
     ? `Still owing (${dueList.length}):\n` + dueList.map(s=>`- ${s.member.name} (${fmtK(s.owed)})`).join('\n')
     : 'Everyone is paid up — thank you all!';
   return msg;
+}
+
+// Called after the broadcast reminder text is copied — assumes it's about
+// to be pasted into the group's chat, so everyone currently unpaid counts
+// as reminded for this cycle, same as if they'd each been messaged directly.
+function markAllUnpaidAsReminded(channel){
+  const grp = state.group;
+  if(!grp) return;
+  getCycleStatus(grp.currentCycle).filter(s=>!s.paid).forEach(s=>{
+    recordReminderSent(s.member.id, grp.currentCycle, channel);
+  });
 }
 
 // A nudge to the guarantor, not the borrower — for when a loan they
@@ -1913,6 +1964,7 @@ function openSmsReminder(member){
   const text = generateMemberReminderText(member);
   if(!member.phone){ toast('This member has no phone number on file.'); return; }
   window.location.href = smsHref(member.phone, text);
+  if(state.group) recordReminderSent(member.id, state.group.currentCycle, 'SMS');
 }
 
 function openSmsGuarantorReminder(guarantor, loan){
@@ -2701,7 +2753,10 @@ function bindOverview(){
   const sendReminderBtn = document.getElementById('ov_send_reminder');
   if(sendReminderBtn){
     sendReminderBtn.onclick = ()=>{
-      navigator.clipboard.writeText(generateWhatsAppReminder()).then(()=>toast('Copied — paste into WhatsApp'));
+      navigator.clipboard.writeText(generateWhatsAppReminder()).then(()=>{
+        markAllUnpaidAsReminded('broadcast');
+        toast('Copied — paste into WhatsApp');
+      });
     };
   }
   const rotationModeSaveBtn = document.getElementById('ov_rotationmode_save');
@@ -2758,7 +2813,8 @@ function renderMembers(){
             <span class="badge ${inRotation ? 'paid' : 'due'}">${inRotation ? 'In rotation' : 'Not in rotation'}</span>
           </div>
           <div class="row" style="flex:none; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
-            ${canEdit() ? `<button class="btn secondary" data-statement="${m.id}" style="padding:6px 10px;font-size:12px;">Statement</button>` : ''}
+            ${canEdit() ? `<button class="btn secondary" data-statement="${m.id}" style="padding:6px 10px;font-size:12px;">Print</button>
+            <button class="btn secondary" data-statement-pdf="${m.id}" style="padding:6px 10px;font-size:12px;">PDF</button>` : ''}
             ${canManageMembers() ? `
             <select data-role="${m.id}" style="font-size:12px;padding:4px;">
               <option value="member" ${(!m.role||m.role==='member')?'selected':''}>Member</option>
@@ -2789,6 +2845,9 @@ function bindMembers(){
   if(needsLoginBtn) needsLoginBtn.onclick = ()=>showMemberAuth('login');
   document.querySelectorAll('[data-statement]').forEach(btn=>{
     btn.onclick = ()=>printMemberStatement(btn.dataset.statement);
+  });
+  document.querySelectorAll('[data-statement-pdf]').forEach(btn=>{
+    btn.onclick = ()=>downloadMemberStatementPdf(btn.dataset.statementPdf);
   });
   const addBtn = document.getElementById('mem_add');
   if(addBtn) addBtn.onclick = async ()=>{
@@ -2876,6 +2935,7 @@ function renderContributions(){
   const status = getCycleStatus(grp.currentCycle);
   const pending = pendingSubmissions();
   return `
+    ${renderRemindersDueCard()}
     ${pending.length ? `
     <div class="card">
       <h2>Pending payments (${pending.length}) <button class="btn secondary" id="refresh_pending" style="float:right; padding:4px 10px; font-size:11px;">Refresh</button></h2>
@@ -2900,18 +2960,52 @@ function renderContributions(){
     </div>`}
     <div class="card">
       <h2>Log contribution — Cycle ${grp.currentCycle}</h2>
-      ${status.length ? status.map(s=>`
+      ${status.length ? status.map(s=>{
+        const last = s.paid ? null : lastReminder(s.member.id, grp.currentCycle);
+        return `
         <div class="member-line">
-          <div><div class="member-name">${s.member.name}</div><div class="member-sub">${s.paid? 'Paid'+(s.credit>0?' · '+fmtK(s.credit)+' credit carried forward':'') : 'Owes '+fmtK(s.owed)}${s.finesOwed>0 ? ' · '+fmtK(s.finesOwed)+' in unpaid fines' : ''}</div></div>
+          <div><div class="member-name">${s.member.name}</div><div class="member-sub">${s.paid? 'Paid'+(s.credit>0?' · '+fmtK(s.credit)+' credit carried forward':'') : 'Owes '+fmtK(s.owed)}${s.finesOwed>0 ? ' · '+fmtK(s.finesOwed)+' in unpaid fines' : ''}${last ? ' · reminded '+daysAgoLabel(last.sentAt) : ''}</div></div>
           <div class="row" style="flex:none; gap:6px;">
             ${canManageFinance() ? `<button class="btn ${s.paid?'secondary':''}" data-log="${s.member.id}" style="padding:6px 10px;font-size:12px;">${s.paid?'Edit':'Log payment'}</button>` : ''}
             ${canManageFinance() && !s.paid ? `<button class="btn secondary" data-remind="${s.member.id}" style="padding:6px 10px;font-size:12px;">Remind</button>` : ''}
             ${canManageFinance() && !s.paid ? `<button class="btn secondary" data-sms-remind="${s.member.id}" style="padding:6px 10px;font-size:12px;">SMS</button>` : ''}
             ${canManageFinance() ? `<button class="btn secondary" data-fine="${s.member.id}" style="padding:6px 10px;font-size:12px;">Fine</button>` : ''}
           </div>
-        </div>`).join('') : `<div class="empty">Add members first.</div>`}
+        </div>`;
+      }).join('') : `<div class="empty">Add members first.</div>`}
     </div>
     ${renderFinesCard()}`;
+}
+
+// Surfaces, without needing to be asked, exactly who still needs a nudge
+// once the group enters its reminder window (or goes overdue) — separate
+// from the full member list below so it doesn't get lost among everyone
+// who's already paid. Shows when each person was last reminded (if ever)
+// so the treasurer isn't guessing whether they already sent one today.
+function renderRemindersDueCard(){
+  if(!canManageFinance()) return '';
+  const grp = state.group;
+  const dueInfo = currentCycleDueInfo();
+  if(!dueInfo || !(dueInfo.isDueSoon || dueInfo.isOverdue)) return '';
+  const dueList = getCycleStatus(grp.currentCycle).filter(s=>!s.paid);
+  if(!dueList.length) return '';
+  return `
+    <div class="card" style="${dueInfo.isOverdue ? 'border-color:var(--danger);' : 'border-color:#f59e0b;'}">
+      <h2>${dueInfo.isOverdue ? '⚠️ Reminders overdue' : '📅 Reminders due'} (${dueList.length})</h2>
+      <div class="member-sub" style="margin-bottom:8px;">Cycle ${grp.currentCycle} ${dueInfo.isOverdue ? 'was due ' + dueInfo.dueDate : 'due ' + dueInfo.dueDate + (dueInfo.daysUntil===0 ? ' (today)' : ` (${dueInfo.daysUntil} day${dueInfo.daysUntil===1?'':'s'} left)`)}.</div>
+      ${dueList.map(s=>{
+        const last = lastReminder(s.member.id, grp.currentCycle);
+        return `
+        <div class="member-line">
+          <div><div class="member-name">${escapeHtml(s.member.name)}</div><div class="member-sub">${fmtK(s.owed)} owed${last ? ' · reminded '+daysAgoLabel(last.sentAt)+' via '+last.channel : ' · not reminded yet'}</div></div>
+          <div class="row" style="flex:none; gap:6px;">
+            <button class="btn secondary" data-remind="${s.member.id}" style="padding:6px 10px;font-size:12px;">WhatsApp</button>
+            <button class="btn secondary" data-sms-remind="${s.member.id}" style="padding:6px 10px;font-size:12px;">SMS</button>
+          </div>
+        </div>`;
+      }).join('')}
+      <button class="btn full" id="remind_all_broadcast" style="margin-top:10px;">Copy broadcast reminder for group chat</button>
+    </div>`;
 }
 
 function renderFinesCard(){
@@ -2956,14 +3050,26 @@ function bindContributions(){
     btn.onclick = ()=>{
       const m = state.members[btn.dataset.remind];
       if(m) openWhatsAppReminder(m);
+      render();
     };
   });
   document.querySelectorAll('[data-sms-remind]').forEach(btn=>{
     btn.onclick = ()=>{
       const m = state.members[btn.dataset.smsRemind];
       if(m) openSmsReminder(m);
+      render();
     };
   });
+  const remindAllBtn = document.getElementById('remind_all_broadcast');
+  if(remindAllBtn){
+    remindAllBtn.onclick = ()=>{
+      navigator.clipboard.writeText(generateWhatsAppReminder()).then(()=>{
+        markAllUnpaidAsReminded('broadcast');
+        toast('Copied — paste into your group chat');
+        render();
+      });
+    };
+  }
   document.querySelectorAll('[data-sms-submission]').forEach(btn=>{
     btn.onclick = ()=>openSubmissionSms(btn.dataset.smsSubmission);
   });
@@ -3476,6 +3582,7 @@ function renderSettings(){
         <button class="btn secondary" id="sync_group_id_copy" style="width:auto; padding:8px 12px;">Copy</button>
       </div>
     </div>
+    ${officer ? renderBackupCard() : ''}
     ${renderAppLockCard()}`;
 }
 
@@ -3502,7 +3609,11 @@ const ACTIVITY_LABELS = {
   fine_paid: 'Fine paid',
   fine_waived: 'Fine waived',
   bid_placed: 'Bid placed',
-  bid_won: 'Bid won'
+  bid_won: 'Bid won',
+  backup_exported: 'Backup downloaded',
+  backup_restored: 'Restored from backup',
+  statement_pdf_exported: 'PDF statement downloaded',
+  reminder_sent: 'Reminder sent'
 };
 function activityLabel(action){ return ACTIVITY_LABELS[action] || action.replace(/_/g,' '); }
 
@@ -3552,6 +3663,134 @@ function bindSettings(){
     };
   }
   bindAppLockCard();
+  bindBackupCard();
+}
+
+/* ---------------------- backup / restore ---------------------- */
+// A full local snapshot of everything this device knows about its group,
+// independent of Firebase — lets the chair keep an offline copy and
+// recover the group if a device is lost/wiped or the Firebase project
+// itself becomes unreachable. Deliberately dumps whole collections rather
+// than hand-picking fields, so a future new collection is included
+// automatically as long as it's added to BACKUP_COLLECTIONS below.
+// Settings/tier is excluded on purpose — that's operator-controlled and
+// read-only from the client (see refreshTierFromRemote), so backing it up
+// or restoring it here wouldn't mean anything.
+const BACKUP_COLLECTIONS = ['members','contributions','payouts','paymentSubmissions','loans','loanRepayments','fines','fundTx','bids','subscriptionApplications','activityLog','reminders'];
+
+function buildBackupSnapshot(){
+  const snapshot = {
+    app: 'chilimba-master',
+    backupVersion: 1,
+    exportedAt: new Date().toISOString(),
+    groupId: state.groupId,
+    group: state.group
+  };
+  BACKUP_COLLECTIONS.forEach(key=>{ snapshot[key] = state[key] || {}; });
+  return snapshot;
+}
+
+function renderBackupCard(){
+  const grp = state.group;
+  return `
+    <div class="card">
+      <h2>Backup &amp; restore</h2>
+      <div class="member-sub" style="margin-bottom:8px;">A downloadable copy of this circle — members, contributions, payouts, loans, fines, the social fund, and the activity log — kept independent of Firebase.</div>
+      <button class="btn secondary full" id="backup_export">Download backup (${totalMemberCount()} members, cycle ${grp ? grp.currentCycle : '—'})</button>
+      ${canManageMembers() ? `
+      <div class="field-hint" style="margin-top:10px;">Restoring replaces everything on this device with what's in the backup file, and pushes it back to Firebase. Only use this to recover a lost device or a wiped group — it can't be undone.</div>
+      <input type="file" id="backup_restore_file" accept="application/json" style="display:none;">
+      <button class="btn danger full" id="backup_restore_btn" style="margin-top:8px;">Restore from backup file…</button>
+      ` : ''}
+    </div>`;
+}
+
+function downloadBackup(){
+  const grp = state.group;
+  const snapshot = buildBackupSnapshot();
+  const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const safeName = (grp && grp.name ? grp.name : 'chilimba').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || 'chilimba';
+  a.href = url;
+  a.download = `${safeName}-backup-${new Date().toISOString().slice(0,10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  logActivity('backup_exported', `Backup file downloaded (${totalMemberCount()} members, cycle ${grp ? grp.currentCycle : '?'})`);
+}
+
+// Minimum shape check — doesn't require every collection (an older backup
+// may predate one), just enough to trust this is a real Chilimba Master
+// snapshot and not some unrelated JSON file someone picked by mistake.
+function isValidBackup(obj){
+  return !!(obj && typeof obj === 'object' && obj.app === 'chilimba-master' && obj.groupId && obj.group && typeof obj.group === 'object');
+}
+
+async function restoreFromBackupFile(file){
+  let parsed;
+  try{
+    parsed = JSON.parse(await file.text());
+  }catch(e){
+    return { error: "That file isn't valid JSON — is it actually a Chilimba Master backup?" };
+  }
+  if(!isValidBackup(parsed)){
+    return { error: "That file doesn't look like a Chilimba Master backup." };
+  }
+
+  // Best effort: don't lose whatever's pending for the group currently on
+  // this device before overwriting it — same courtesy switchGroupContext
+  // gives when switching to a different group.
+  try{ await flushPendingSync(); }catch(e){ /* best effort */ }
+  localStorage.removeItem(PENDING_KEY);
+
+  // Whoever's logged in on this device belongs to the group being
+  // replaced, not necessarily the restored one — clear it so nobody ends
+  // up silently acting under a stale identity, same as a real group switch.
+  clearMemberSession();
+
+  state.groupId = parsed.groupId;
+  state.group = parsed.group;
+  BACKUP_COLLECTIONS.forEach(key=>{ state[key] = parsed[key] || {}; });
+  saveState();
+
+  logActivity('backup_restored', `Restored from a backup dated ${parsed.exportedAt ? parsed.exportedAt.slice(0,10) : 'an unknown date'}`);
+
+  // Push everything restored back to Firebase under its groupId too — in
+  // case the cloud copy is what actually got wiped, this backup may now
+  // be the most complete version of the group that exists anywhere.
+  if(FB_CONFIG.dbUrl){
+    if(state.group) queueSync('group', state.group);
+    BACKUP_COLLECTIONS.forEach(key=>{
+      Object.keys(state[key]||{}).forEach(id=>{ queueSync(key+'/'+id, state[key][id]); });
+    });
+  }
+
+  return { ok: true };
+}
+
+function bindBackupCard(){
+  const exportBtn = document.getElementById('backup_export');
+  if(exportBtn) exportBtn.onclick = ()=>{
+    downloadBackup();
+    toast('Backup downloaded');
+  };
+  const restoreBtn = document.getElementById('backup_restore_btn');
+  const fileInput = document.getElementById('backup_restore_file');
+  if(restoreBtn && fileInput){
+    restoreBtn.onclick = ()=>fileInput.click();
+    fileInput.onchange = async ()=>{
+      const file = fileInput.files[0];
+      fileInput.value = '';
+      if(!file) return;
+      if(!confirm("This replaces every member, contribution, payout, loan, fine, and fund record on this device — and re-pushes them to Firebase — with what's in this backup file. You'll need to log in again afterward. This cannot be undone. Continue?")) return;
+      const result = await restoreFromBackupFile(file);
+      if(result.error){ toast(result.error); return; }
+      toast('Restored — please log in again');
+      render();
+    };
+  }
 }
 
 /* ---------------------- member statement (print / save as PDF) ---------------------- */
@@ -3607,6 +3846,126 @@ function generateMemberStatementHtml(member){
     </div>`;
 }
 
+// Loads jsPDF + its autotable plugin from cdnjs the first time a PDF is
+// requested, rather than bundling them into the file — keeps this a
+// dependency-free single file until someone actually wants a PDF, and
+// caches in the browser after that first load. Safe to call repeatedly;
+// no-ops once both scripts are present.
+function loadPdfLibs(){
+  if(window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API && window.jspdf.jsPDF.API.autoTable){
+    return Promise.resolve();
+  }
+  const loadScript = (src)=> new Promise((resolve, reject)=>{
+    if(document.querySelector(`script[src="${src}"]`)){ resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = ()=>reject(new Error('Failed to load ' + src));
+    document.head.appendChild(s);
+  });
+  return loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
+    .then(()=>loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js'));
+}
+
+// Builds the same statement as generateMemberStatementHtml, but as an
+// actual downloadable .pdf file instead of a print-dialog overlay — no
+// "Save as PDF" step needed, which matters on WebViews where the native
+// print dialog isn't always reliable. Needs a connection the first time
+// (to fetch the PDF libraries); falls back to the print flow if that
+// fails, so this never leaves someone with no way to get their statement.
+async function downloadMemberStatementPdf(memberId){
+  const member = state.members[memberId];
+  if(!member) return;
+  toast('Preparing PDF…');
+  try{
+    await loadPdfLibs();
+  }catch(e){
+    toast("Couldn't load PDF support (needs a connection the first time) — opening print instead.");
+    printMemberStatement(memberId);
+    return;
+  }
+
+  const grp = state.group;
+  const d = computeMemberDashboard(member);
+  const payouts = memberPayouts(member.id);
+  const fines = memberFines(member.id);
+  const loans = memberLoans(member.id).map(l=>Object.assign({}, l, computeLoanSummary(l)));
+  const today = new Date().toISOString().slice(0,10);
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const marginX = 40;
+  const pageRight = 555;
+  let y = 50;
+
+  doc.setFont('times', 'bold'); doc.setFontSize(16); doc.setTextColor(20);
+  doc.text(grp.name || 'Chilimba group', marginX, y);
+  doc.setFont('times', 'normal'); doc.setFontSize(9); doc.setTextColor(90);
+  doc.text('Chilimba savings circle — member statement', marginX, y + 14);
+  doc.text('Generated ' + today, pageRight, y, { align: 'right' });
+  doc.setDrawColor(30); doc.setLineWidth(1); doc.line(marginX, y + 22, pageRight, y + 22);
+  y += 46;
+
+  doc.setTextColor(20); doc.setFont('times', 'bold'); doc.setFontSize(12);
+  doc.text(member.name, marginX, y);
+  doc.setFont('times', 'normal'); doc.setFontSize(10); doc.setTextColor(60);
+  doc.text(`${roleLabel(member.role)} · joined ${member.joinDate || '—'}${member.phone ? ' · ' + member.phone : ''}`, marginX, y + 14);
+  y += 32;
+
+  const stats = [
+    ['CONTRIBUTION', `${fmtK(grp.contribution)} ${grp.frequency}`],
+    ['CURRENT CYCLE', String(d.cycle)],
+    ['STANDING', d.paidThisCycle ? 'Paid up' : 'Owes ' + fmtK(d.owedBalance)]
+  ];
+  if(d.finesOwed > 0) stats.push(['UNPAID FINES', fmtK(d.finesOwed)]);
+  let sx = marginX;
+  stats.forEach(([label, val])=>{
+    doc.setFont('times', 'normal'); doc.setFontSize(8); doc.setTextColor(90);
+    doc.text(label, sx, y);
+    doc.setFont('times', 'bold'); doc.setFontSize(11); doc.setTextColor(20);
+    doc.text(val, sx, y + 14);
+    sx += 128;
+  });
+  y += 30;
+
+  const section = (title, head, rows)=>{
+    doc.setFont('times', 'bold'); doc.setFontSize(11); doc.setTextColor(20);
+    doc.text(title, marginX, y);
+    y += 8;
+    if(rows.length){
+      doc.autoTable({
+        startY: y, margin: { left: marginX, right: 595 - pageRight },
+        head: [head], body: rows,
+        styles: { font: 'times', fontSize: 9, cellPadding: 4, textColor: 30 },
+        headStyles: { fillColor: [240, 240, 240], textColor: 20, lineWidth: 0.5, lineColor: 200 },
+        theme: 'plain'
+      });
+      y = doc.lastAutoTable.finalY + 18;
+    } else {
+      doc.setFont('times', 'normal'); doc.setFontSize(9); doc.setTextColor(140);
+      doc.text('None recorded.', marginX, y + 8);
+      y += 26;
+    }
+    if(y > 740){ doc.addPage(); y = 50; }
+  };
+
+  section('Contribution history', ['Cycle', 'Date', 'Paid', 'Method', 'Status'],
+    d.history.map(c=>[String(c.cycle), c.date, fmtK(c.amountPaid), c.method || '—', c.late ? 'Late/partial' : 'On time']));
+  section('Payouts received', ['Round', 'Cycle', 'Amount', 'Date'],
+    payouts.map(p=>[String(p.rotationNumber || 1), String(p.cycle), fmtK(p.amount), p.date]));
+  if(fines.length) section('Fines', ['Cycle', 'Amount', 'Reason', 'Status', 'Date'],
+    fines.map(f=>[String(f.cycle), fmtK(f.amount), f.reason, f.status, f.date]));
+  if(loans.length) section('Loans', ['Principal', 'Interest', 'Outstanding', 'Status', 'Due'],
+    loans.map(l=>[fmtK(l.principal), l.interestRate + '%', fmtK(l.outstanding), l.displayStatus, l.dueDate || '—']));
+
+  doc.setFont('times', 'normal'); doc.setFontSize(8); doc.setTextColor(150);
+  doc.text(`This statement was generated by Chilimba Master and reflects records as of ${today}. For any discrepancy, contact your group's treasurer or chairperson.`, marginX, 800, { maxWidth: pageRight - marginX });
+
+  const safeName = (member.name || 'member').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'member';
+  doc.save(`${safeName}-statement-${today}.pdf`);
+  logActivity('statement_pdf_exported', `${member.name} downloaded a PDF statement`);
+}
+
 // Fills the print-only overlay, hides everything else, and hands off to
 // the browser's print dialog. The overlay is torn back down on
 // window.afterprint (with a timeout fallback for WebViews that never
@@ -3660,7 +4019,10 @@ function bindShare(){
   };
   document.getElementById('wa_reminder_copy').onclick = ()=>{
     const text = generateWhatsAppReminder();
-    navigator.clipboard.writeText(text).then(()=>toast('Copied — paste into WhatsApp'));
+    navigator.clipboard.writeText(text).then(()=>{
+      markAllUnpaidAsReminded('broadcast');
+      toast('Copied — paste into WhatsApp');
+    });
   };
   document.getElementById('print_statement').onclick = ()=>window.print();
 }
@@ -3814,6 +4176,7 @@ function renderMemberShell(member, grp){
       <h2>Your statement</h2>
       <div class="field-hint" style="margin-top:0;">A record of your contributions, payouts, fines, and loans — for your own records.</div>
       <button class="btn secondary full no-print" id="ms_statement">Print / save as PDF</button>
+      <button class="btn secondary full no-print" id="ms_statement_pdf" style="margin-top:8px;">Download PDF</button>
     </div>`;
 
   return `
@@ -3836,6 +4199,10 @@ function bindMemberShell(member){
   const statementBtn = document.getElementById('ms_statement');
   if(statementBtn){
     statementBtn.onclick = ()=>printMemberStatement(member.id);
+  }
+  const statementPdfBtn = document.getElementById('ms_statement_pdf');
+  if(statementPdfBtn){
+    statementPdfBtn.onclick = ()=>downloadMemberStatementPdf(member.id);
   }
   const remindBtn = document.getElementById('ms_enable_reminders');
   if(remindBtn){
