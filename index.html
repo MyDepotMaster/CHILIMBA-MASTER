@@ -276,6 +276,11 @@
     #landing .lp-pain-list, #landing .lp-feat-grid, #landing .lp-price-grid{grid-template-columns:1fr;}
   }
 </style>
+<!-- OneSignal Web Push — lets members using this app in a plain browser
+     (not the installed Median/Android app) also get push reminders.
+     Requires OneSignalSDKWorker.js to be hosted at the site root
+     alongside this file — see setup notes near ONESIGNAL_WEB_APP_ID below. -->
+<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
 </head>
 <body data-theme="light">
 
@@ -576,6 +581,19 @@ const PENDING_KEY = 'chilimba_pending_sync';
 const FB_CONFIG = {
   dbUrl: 'https://chilimba-master-default-rtdb.firebaseio.com'
 };
+
+// Fill in with the same OneSignal App ID used for the Android app (Settings
+// > Keys & IDs in the OneSignal dashboard — App IDs are not secret, safe to
+// ship in client code; only the REST API Key must stay private). Leave blank
+// and web push simply stays off — the Android app's push keeps working
+// either way, since that goes through the separate Median bridge.
+const ONESIGNAL_WEB_APP_ID = '';
+window.OneSignalDeferred = window.OneSignalDeferred || [];
+if(ONESIGNAL_WEB_APP_ID){
+  OneSignalDeferred.push(async function(OneSignal){
+    await OneSignal.init({ appId: ONESIGNAL_WEB_APP_ID });
+  });
+}
 
 const TIER_LIMITS = {
   free:    { totalMembers: 8, loans:false, exports:false },
@@ -973,12 +991,62 @@ const MEMBER_SESSION_KEY = 'chilimba_member_session';
 // there's no token to manage since there's no Firebase Auth involved.
 function setMemberSession(memberId){
   localStorage.setItem(MEMBER_SESSION_KEY, JSON.stringify({ memberId, ts: Date.now() }));
+  linkPushIdentity(memberId);
 }
 function getMemberSession(){
   try{ return JSON.parse(localStorage.getItem(MEMBER_SESSION_KEY)); }catch(e){ return null; }
 }
 function clearMemberSession(){
   localStorage.removeItem(MEMBER_SESSION_KEY);
+  unlinkPushIdentity();
+}
+
+// ---------------------------------------------------------------------
+// Automatic push reminders (OneSignal, via the Median native bridge).
+//
+// This app has no server of its own, so a real background push (one that
+// arrives even when the app is closed) can't be sent from here — a
+// separate scheduled job does that (see /mnt/user-data/outputs, the
+// "chilimba-reminders" Apps Script). All this file needs to do is tell
+// OneSignal WHICH device belongs to which member, by member.id, so that
+// job can target them. `median` only exists when this page is running
+// inside the Median-wrapped app, never in a plain mobile browser — so
+// every call here is guarded and silently does nothing on the web.
+// ---------------------------------------------------------------------
+// Automatic push reminders (OneSignal — via the Median native bridge for
+// the installed Android app, and via the OneSignal Web SDK for anyone
+// using this app straight in a browser).
+//
+// This app has no server of its own, so a real background push (one that
+// arrives even when the app is closed) can't be sent from here — a
+// separate scheduled job does that (see /mnt/user-data/outputs, the
+// "chilimba-reminders" Apps Script). All this file needs to do is tell
+// OneSignal WHICH device belongs to which member, by member.id, so that
+// job can target them.
+function linkPushIdentity(memberId){
+  if(!memberId) return;
+  try{
+    if(typeof median !== 'undefined' && median.onesignal && median.onesignal.login){
+      median.onesignal.login(memberId).catch(()=>{ /* best effort, e.g. no connection yet */ });
+    }
+  }catch(e){ /* median bridge not present — normal in a browser tab */ }
+  if(ONESIGNAL_WEB_APP_ID){
+    OneSignalDeferred.push(function(OneSignal){
+      OneSignal.login(memberId).catch(()=>{ /* best effort */ });
+    });
+  }
+}
+function unlinkPushIdentity(){
+  try{
+    if(typeof median !== 'undefined' && median.onesignal && median.onesignal.logout){
+      median.onesignal.logout().catch(()=>{});
+    }
+  }catch(e){ /* median bridge not present */ }
+  if(ONESIGNAL_WEB_APP_ID){
+    OneSignalDeferred.push(function(OneSignal){
+      OneSignal.logout().catch(()=>{});
+    });
+  }
 }
 
 // Officer session helpers — a "session" here just means someone (member,
@@ -1994,11 +2062,11 @@ function openSubmissionSms(subId){
 }
 
 // Local, on-device nudge for a member who's logged into their own view —
-// there's no server here to push a real notification while the app is
-// closed, so this is opt-in and only ever fires while the member has the
-// app open: a lightweight "before it's due" heads-up rather than true
-// background push. WhatsApp (above) is what reliably reaches someone
-// whether or not they have the app open.
+// this only fires while the member has the app open (a lightweight
+// "before it's due" heads-up), unlike the OneSignal push wired up via
+// linkPushIdentity()/the scheduled reminders job, which can reach the
+// member's device even when the app is closed. WhatsApp (above) is what
+// reliably reaches someone with no app installed at all.
 function reminderPrefKey(memberId){ return 'chilimba_reminder_pref_' + memberId; }
 function notificationsEnabledOnThisDevice(){
   const session = getMemberSession();
@@ -2019,6 +2087,15 @@ async function toggleDeviceReminders(memberId){
   }
   localStorage.setItem(reminderPrefKey(memberId), 'on');
   toast('Reminders turned on for this device');
+  // Also opt this browser in to real background push (OneSignal Web SDK),
+  // so reminders still arrive once this tab is closed. No-ops if
+  // ONESIGNAL_WEB_APP_ID isn't configured, or inside the Median app (that
+  // path is handled separately by linkPushIdentity's median.onesignal call).
+  if(ONESIGNAL_WEB_APP_ID){
+    OneSignalDeferred.push(function(OneSignal){
+      OneSignal.User.PushSubscription.optIn().catch(()=>{ /* best effort */ });
+    });
+  }
 }
 
 // Fires at most once per cycle per device — checked whenever the member
